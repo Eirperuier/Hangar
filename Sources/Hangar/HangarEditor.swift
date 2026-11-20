@@ -102,6 +102,8 @@ public final class HangarEditor: UIViewController {
     private let canvas = CanvasView()
     private let closeButton: UIButton
     private let historyBar: UIVisualEffectView
+    /// On an iPad, Photos' toggle between the original and the edit, first on the history capsule.
+    private let originalButton: UIButton
     private let undoButton: UIButton
     private let redoButton: UIButton
     private let moreButton: UIButton
@@ -113,8 +115,13 @@ public final class HangarEditor: UIViewController {
     private let ruler: Ruler
     private let filters = Strip()
     private var thumbnails: [FilterThumbnail] = []
+    private let loupe: FilterLoupe
     private let filterRuler: Ruler
+    /// How much of each filter, as it was last set: a filter comes back as it was left (Photos'), whole the first time.
+    private var filterAmounts: [String: Double] = [:]
     private let modeBar: ModeBar
+    /// The bars hidden while a filter's ruler is moved (Photos', to see the picture whole).
+    private var barsHidden = false
 
     private var source: HangarSource?
     private var flight: FlightGroup?
@@ -136,14 +143,16 @@ public final class HangarEditor: UIViewController {
         rulerTool = tool
         closeButton = Chrome.button("xmark", label: "Cancel", style: style)
         historyBar = Chrome.capsule(style)
+        originalButton = Chrome.plainButton("square.and.line.vertical.and.square.filled", label: "Show Original", style: style)
         undoButton = Chrome.plainButton("arrow.uturn.backward", label: "Undo", style: style)
         redoButton = Chrome.plainButton("arrow.uturn.forward", label: "Redo", style: style)
         moreButton = Chrome.button("ellipsis", label: "More", style: style)
         doneButton = Chrome.button("checkmark", label: "Done", style: style)
         ruler = Ruler(style: style)
         filterRuler = Ruler(style: style)
+        loupe = FilterLoupe(style: style, thumbnail: FilterThumbnail.side)
         modeBar = ModeBar(modes: [
-            .init(id: HangarMode.adjust.id, name: "Adjust", symbol: "dial.medium", chosenSymbol: "dial.medium.fill"),
+            .init(id: HangarMode.adjust.id, name: "Adjust", symbol: "dial.low", chosenSymbol: "dial.low.fill"),
             .init(id: HangarMode.filters.id, name: "Filters", symbol: "camera.filters", chosenSymbol: "camera.filters"),
         ], chosen: HangarMode.adjust.id, style: style)
         super.init(nibName: nil, bundle: nil)
@@ -160,7 +169,10 @@ public final class HangarEditor: UIViewController {
         presenter.present(self, animated: false)
     }
 
-    public override var prefersStatusBarHidden: Bool { true }
+    /// Photos hides the status bar on a phone, not on an iPad.
+    public override var prefersStatusBarHidden: Bool { traitCollection.userInterfaceIdiom == .phone }
+    /// Photos' editor hides the home indicator too.
+    public override var prefersHomeIndicatorAutoHidden: Bool { true }
 
     // MARK: Building
 
@@ -174,6 +186,8 @@ public final class HangarEditor: UIViewController {
         closeButton.addAction(UIAction { [weak self] _ in self?.closeTapped() }, for: .touchUpInside)
         undoButton.addAction(UIAction { [weak self] _ in self?.step(-1) }, for: .touchUpInside)
         redoButton.addAction(UIAction { [weak self] _ in self?.step(1) }, for: .touchUpInside)
+        originalButton.addAction(UIAction { [weak self] _ in self?.toggleOriginal() }, for: .touchUpInside)
+        historyBar.contentView.addSubview(originalButton)
         historyBar.contentView.addSubview(undoButton)
         historyBar.contentView.addSubview(redoButton)
         doneButton.addAction(UIAction { [weak self] _ in self?.doneTapped() }, for: .touchUpInside)
@@ -182,8 +196,8 @@ public final class HangarEditor: UIViewController {
             completion(self?.moreActions() ?? [])
         }])
         titleLabel.textAlignment = .center
-        titleLabel.font = style.nameFont.withSize(13)
-        titleLabel.textColor = style.secondary
+        titleLabel.font = style.titleFont
+        titleLabel.textColor = style.title
         nameLabel.font = style.nameFont
         nameLabel.textColor = style.secondary
         for chrome in [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, tools, ruler, filters, filterRuler, modeBar] as [UIView] {
@@ -192,23 +206,43 @@ public final class HangarEditor: UIViewController {
 
         toolButtons = toolbox.adjustments.map { ToolButton($0, style: style) }
         tools.setItems(toolButtons, chosen: 0)
+        tools.feel = .tools
+        tools.pitch = ToolButton.size + 20
+        tools.itemSize = ToolButton.size
+        // Photos' tools strip: its ends fade from clear 14 points in to whole 40 in.
+        tools.fadeClear = 14
+        tools.fadeWhole = 40
         tools.onChoose = { [weak self] i in self?.passTool(i) }
-        tools.onMove = { [weak self] dragged in self?.ruler.setEnabled(false, dimmed: dragged, animated: true) }
+        // The ruler off and dimmed while the strip moves (Photos'), set for the tool it rests on.
+        tools.onMove = { [weak self] in self?.ruler.setState(enabled: false, dimmed: true, animated: true) }
         tools.onRest = { [weak self] i in self?.chooseTool(i) }
         tools.onTapChosen = { [weak self] i in self?.toggleTool(i) }
-        ruler.onBegin = { [weak self] in self?.rulerBegan() }
+        tools.accessibilityLabel = "Enhancements"
+        tools.spokenValue = { [weak self] i in self?.spokenTool(i) ?? "" }
+        ruler.onTouch = { [weak self] in self?.rulerTouched() }
         ruler.onChange = { [weak self] value in self?.rulerMoved(value) }
         ruler.onEnd = { [weak self] _ in self?.rulerEnded() }
 
         let none = FilterThumbnail(id: nil, name: "Original", style: style)
         thumbnails = [none] + toolbox.filters.map { FilterThumbnail(id: $0.id, name: $0.name, style: style) }
+        thumbnails.first?.end.first = true
+        thumbnails.last?.end.last = true
+        if let id = edit.filter { filterAmounts[id] = edit.filterAmount }
         filters.setItems(thumbnails, chosen: thumbnails.firstIndex { $0.id == edit.filter } ?? 0)
+        filters.feel = .filters
+        filters.overhang = 12
+        filters.loupe = loupe
         filters.onChoose = { [weak self] i in self?.chooseFilter(i) }
-        filters.onMove = { [weak self] dragged in self?.filterRuler.setEnabled(false, dimmed: dragged, animated: true) }
+        filters.onMove = { [weak self] in self?.filterRuler.setState(enabled: false, dimmed: true, animated: true) }
         filters.onRest = { [weak self] _ in self?.filtersRested() }
+        filters.accessibilityLabel = "Filters"
+        filters.spokenValue = { [weak self] i in self?.thumbnails[i].name ?? "" }
         filterRuler.range = 0...1
+        filterRuler.magnet = 1
+        filterRuler.marked = 0.5
+        filterRuler.onTouch = { [weak self] in self?.filterRulerTouched() }
         filterRuler.onChange = { [weak self] value in self?.filterAmountMoved(value) }
-        filterRuler.onEnd = { [weak self] _ in self?.commit() }
+        filterRuler.onEnd = { [weak self] _ in self?.filterAmountEnded() }
 
         modeBar.onChoose = { [weak self] id in self?.mode = HangarMode(id) }
 
@@ -223,7 +257,7 @@ public final class HangarEditor: UIViewController {
         // Hidden until it has flown in (or faded in).
         backdrop.alpha = 0
         canvas.alpha = 0
-        for chrome in chromeViews { chrome.alpha = 0 }
+        for chrome in chromeViews { Chrome.show(chrome, false) }
     }
 
     private var chromeViews: [UIView] {
@@ -259,67 +293,98 @@ public final class HangarEditor: UIViewController {
         sideways = traitCollection.horizontalSizeClass == .regular || bounds.width > bounds.height
         backdrop.frame = bounds
 
-        let top = safe.top + 4
-        closeButton.frame = CGRect(x: safe.left + 16, y: top, width: 44, height: 44)
-        historyBar.frame = CGRect(x: closeButton.frame.maxX + 8, y: top, width: 92, height: 44)
+        // Photos' top bar: 44-point buttons 12 apart, in from the sides (16 on a phone, 10 on an iPad), from the top of
+        // the safe area (8 below it on an iPad, under its status bar); undo and redo (and on an iPad the original
+        // first) on one capsule, 52 apart; the mode's name in the middle on an iPad.
+        let button: CGFloat = 44
+        let side: CGFloat = sideways ? 10 : 16
+        let top = safe.top
+        closeButton.frame = CGRect(x: safe.left + side, y: top, width: button, height: button)
+        let onCapsule: [UIButton] = sideways ? [originalButton, undoButton, redoButton] : [undoButton, redoButton]
+        originalButton.isHidden = !sideways
+        historyBar.frame = CGRect(x: closeButton.frame.maxX + 12, y: top, width: button + 52 * CGFloat(onCapsule.count - 1), height: button)
         Chrome.round(historyBar)
-        undoButton.frame = CGRect(x: 2, y: 0, width: 44, height: 44)
-        redoButton.frame = CGRect(x: 46, y: 0, width: 44, height: 44)
-        doneButton.frame = CGRect(x: bounds.maxX - safe.right - 16 - 44, y: top, width: 44, height: 44)
-        moreButton.frame = CGRect(x: doneButton.frame.minX - 12 - 44, y: top, width: 44, height: 44)
-        titleLabel.frame = CGRect(x: historyBar.frame.maxX + 8, y: top, width: moreButton.frame.minX - historyBar.frame.maxX - 16, height: 44)
+        for (i, item) in onCapsule.enumerated() { item.frame = CGRect(x: 52 * CGFloat(i), y: 0, width: button, height: button) }
+        doneButton.frame = CGRect(x: bounds.maxX - safe.right - side - button, y: top, width: button, height: button)
+        moreButton.frame = CGRect(x: doneButton.frame.minX - 12 - button, y: top, width: button, height: button)
+        titleLabel.frame = CGRect(x: bounds.midX - 150, y: top, width: 300, height: button)
         titleLabel.isHidden = !sideways
         let below = closeButton.frame.maxY + 12
 
         let region: CGRect
         if sideways {
+            // Photos' iPad layout: the modes down the left side, their middle the screen's; the ruler 75 in from the
+            // right, 43 from the top and bottom; the tools 117 in, 86 from them; the name's right 36 before the tools.
             let along = modeBar.fittingSize(for: .along)
             modeBar.axis = .along
-            modeBar.frame = CGRect(x: safe.left + 16, y: bounds.midY - along.height / 2, width: along.width, height: along.height)
-            let rulerHeight = min(320, bounds.height * 0.45)
+            modeBar.frame = CGRect(x: safe.left + 26.5, y: bounds.midY - along.height / 2, width: along.width, height: along.height)
+            let right = bounds.maxX - safe.right
             ruler.axis = .along
-            ruler.frame = CGRect(x: bounds.maxX - safe.right - 10 - 36, y: bounds.midY - rulerHeight / 2, width: 36, height: rulerHeight)
+            ruler.frame = CGRect(x: right - 75, y: 43, width: Ruler.thickness, height: bounds.height - 86)
             filterRuler.axis = .along
             filterRuler.frame = ruler.frame
-            let stripHeight = min(bounds.height - below - safe.bottom - 32, 520)
-            for strip in [tools, filters] {
-                strip.axis = .along
-                strip.frame = CGRect(x: ruler.frame.minX - 6 - 56, y: bounds.midY - stripHeight / 2, width: 56, height: stripHeight)
-            }
-            tools.itemSize = 34
-            tools.pitch = 46
-            filters.itemSize = 36
-            filters.pitch = 41
+            tools.axis = .along
+            // Photos shows the tools 361 points each way from the middle, fading at the ends as on a phone.
+            tools.reach = 361
+            tools.frame = CGRect(x: right - 117, y: 86, width: ToolButton.size, height: bounds.height - 172)
+            // Photos' filters on an iPad: 51-point thumbnails 53 apart on a wide wheel (700), shown as far as the tools.
+            filters.axis = .along
+            setFilterStrip(side: 51, wheel: 700, reach: 361)
+            // Their middle 82 in from the right, nearer the ruler than the tools' (room for the dot on their left).
+            filters.frame = CGRect(x: right - 82 - 75 / 2, y: tools.frame.minY, width: 75, height: tools.frame.height)
             nameLabel.textAlignment = .right
-            nameLabel.frame = CGRect(x: tools.frame.minX - 8 - 150, y: bounds.midY - 10, width: 150, height: 20)
-            region = CGRect(x: modeBar.frame.maxX + 24, y: below, width: nameLabel.frame.minX - 12 - modeBar.frame.maxX - 24,
+            let font = style.nameFont
+            let width: CGFloat = 200
+            nameLabel.frame = CGRect(x: tools.frame.minX - 36 - width, y: bounds.midY - (font.ascender - font.capHeight / 2),
+                                     width: width, height: ceil(font.lineHeight))
+            region = CGRect(x: modeBar.frame.maxX + 24, y: below, width: tools.frame.minX - 36 - 120 - modeBar.frame.maxX - 24,
                             height: bounds.maxY - max(safe.bottom, 16) - 12 - below)
         } else {
+            // Photos' phone layout, up from the mode bar 16 points off the bottom: the ruler 71 above the bar's top,
+            // the tools 113 (the filters 125, taller, their middles level with the tools'), the name's middle 152 (160).
             let across = modeBar.fittingSize(for: .across)
             modeBar.axis = .across
-            modeBar.frame = CGRect(x: bounds.midX - across.width / 2, y: bounds.maxY - max(safe.bottom - 6, 10) - across.height,
+            tools.reach = nil
+            modeBar.frame = CGRect(x: bounds.midX - across.width / 2, y: bounds.maxY - 16 - across.height,
                                    width: across.width, height: across.height)
+            let base = modeBar.frame.minY
+            let width = bounds.width - safe.left - safe.right
             ruler.axis = .across
-            ruler.frame = CGRect(x: safe.left, y: modeBar.frame.minY - 14 - 36, width: bounds.width - safe.left - safe.right, height: 36)
+            ruler.frame = CGRect(x: safe.left, y: base - 71, width: width, height: Ruler.thickness)
             filterRuler.axis = .across
             filterRuler.frame = ruler.frame
-            for strip in [tools, filters] {
-                strip.axis = .across
-                strip.frame = CGRect(x: safe.left, y: ruler.frame.minY - 8 - 60, width: ruler.frame.width, height: 60)
-            }
-            tools.itemSize = 48
-            tools.pitch = 72
-            filters.itemSize = 46
-            filters.pitch = 52
+            tools.axis = .across
+            tools.frame = CGRect(x: safe.left, y: base - 113, width: width, height: ToolButton.size)
+            // Photos' filters on a phone: 52-point thumbnails 54 apart on a wheel of 200, three and a half each way.
+            filters.axis = .across
+            setFilterStrip(side: FilterThumbnail.side, wheel: 200, reach: nil)
+            filters.frame = CGRect(x: safe.left, y: base - 125, width: width, height: 75)
             nameLabel.textAlignment = .center
-            nameLabel.frame = CGRect(x: 0, y: tools.frame.minY - 12 - 20, width: bounds.width, height: 20)
-            region = CGRect(x: safe.left, y: below, width: bounds.width - safe.left - safe.right, height: nameLabel.frame.minY - 16 - below)
+            placeName(capMiddle: base - (mode == .filters ? 159.7 : 151.7), width: bounds.width)
+            region = CGRect(x: safe.left, y: below, width: width, height: base - 151.7 - 24 - below)
         }
         for thumbnail in thumbnails { thumbnail.axis = sideways ? .along : .across }
         if !leaving {
             canvas.frame = Self.fit(previewSize, in: region, scale: view.window?.screen.scale ?? 2)
             fitShown()
         }
+    }
+
+    private func setFilterStrip(side: CGFloat, wheel: CGFloat, reach: CGFloat?) {
+        filters.pitch = side + 2
+        filters.itemSize = side + 2
+        filters.wheel = wheel
+        filters.reach = reach
+        filters.fadeClear = 14
+        filters.fadeWhole = 40
+        loupe.thumbnail = side
+    }
+
+    /// The name across the middle, its capitals' middle at `capMiddle` (where Photos' is).
+    private func placeName(capMiddle: CGFloat, width: CGFloat) {
+        let font = style.nameFont
+        let top = capMiddle - (font.ascender - font.capHeight / 2)
+        nameLabel.frame = CGRect(x: 0, y: top, width: width, height: ceil(font.lineHeight))
     }
 
     private func fitShown() {
@@ -365,7 +430,8 @@ public final class HangarEditor: UIViewController {
         render()
         let showChrome = {
             UIView.animate(withDuration: 0.3, delay: 0.05, options: [.curveEaseOut, .allowUserInteraction]) {
-                for chrome in self.chromeViews { chrome.alpha = 1 }
+                for chrome in self.chromeViews { Chrome.show(chrome, true) }
+                if self.edit.filter == nil { self.filterRuler.alpha = 0 }
             }
         }
         guard let source, let start = place(of: source) else {
@@ -433,7 +499,7 @@ public final class HangarEditor: UIViewController {
         flyer?.removeFromSuperview()
         view.isUserInteractionEnabled = false
         UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
-            for chrome in self.chromeViews { chrome.alpha = 0 }
+            for chrome in self.chromeViews { Chrome.show(chrome, false) }
         }
         guard let source, place(of: source) != nil else {
             UIView.animate(withDuration: 0.25) {
@@ -495,6 +561,17 @@ public final class HangarEditor: UIViewController {
         return UIImage(cgImage: picture)
     }
 
+    /// Photos' Show Original on an iPad: the original until it's tapped again.
+    private func toggleOriginal() {
+        comparing.toggle()
+        var configuration = originalButton.configuration
+        configuration?.image = UIImage(systemName: comparing ? "square.filled.and.line.vertical.and.square" : "square.and.line.vertical.and.square.filled",
+                                       withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+        originalButton.configuration = configuration
+        originalButton.accessibilityTraits = comparing ? [.button, .selected] : .button
+        render()
+    }
+
     @objc private func held(_ press: UILongPressGestureRecognizer) {
         switch press.state {
         case .began: comparing = true
@@ -515,7 +592,8 @@ public final class HangarEditor: UIViewController {
             self.tools.isHidden = !adjusting
             self.ruler.isHidden = !adjusting
             self.filters.isHidden = adjusting
-            self.filterRuler.isHidden = adjusting || self.edit.filter == nil
+            self.filterRuler.isHidden = adjusting
+            self.filterRuler.alpha = self.edit.filter == nil ? 0 : 1
         }
         titleLabel.text = (adjusting ? "Adjust" : "Filters").uppercased()
         if adjusting {
@@ -524,14 +602,18 @@ public final class HangarEditor: UIViewController {
             showName(thumbnails[filters.chosen].name)
             makeThumbnails()
         }
+        // The name sits a little higher over the filters.
+        view.setNeedsLayout()
     }
 
     private func showName(_ name: String) {
-        nameLabel.attributedText = NSAttributedString(string: name.uppercased(), attributes: [.kern: 0.6, .font: style.nameFont,
+        nameLabel.attributedText = NSAttributedString(string: name.uppercased(), attributes: [.font: style.nameFont,
                                                                                               .foregroundColor: style.secondary])
     }
 
     // MARK: Adjust
+
+    private var autoID: String { HangarAdjustment.auto.id }
 
     /// A tool passing the middle of the strip as it moves: its name shown, the ruler (off meanwhile) left alone.
     private func passTool(_ index: Int) {
@@ -540,74 +622,147 @@ public final class HangarEditor: UIViewController {
         showName(toolbox.adjustments[index].name)
     }
 
-    /// The strip came to rest on a tool: the ruler set to it and on again.
+    /// The strip came to rest on a tool: the ruler set to it and on again (as its tool is: off for Auto off, dimmed
+    /// for a tool switched off).
     private func chooseTool(_ index: Int) {
         guard toolbox.adjustments.indices.contains(index) else { return }
         let adjustment = toolbox.adjustments[index]
         tool = adjustment.id
         rulerTool = adjustment.id
         ruler.range = adjustment.range
-        ruler.set(edit.value(of: rulerTool))
+        ruler.magnet = 0
+        ruler.marked = 0
+        ruler.set(shownValue(rulerTool))
+        ruler.accessibilityLabel = "Intensity Slider for \(adjustment.name)"
         showName(adjustment.name)
-        ruler.setEnabled(true, animated: true)
+        setRulerState(animated: true)
     }
 
-    /// The chosen tool tapped: Auto on or off; any other with a value, switched off or on (its value kept).
+    private func setRulerState(animated: Bool) {
+        if rulerTool == autoID {
+            let on = edit.applies(autoID)
+            ruler.setState(enabled: on, dimmed: !on, animated: animated)
+        } else {
+            ruler.setState(enabled: true, dimmed: edit.switchedOff.contains(rulerTool), animated: animated)
+        }
+    }
+
+    /// What a tool's ruler shows: its value, or its default while it's switched off (Photos').
+    private func shownValue(_ id: String) -> Double {
+        id != autoID && edit.switchedOff.contains(id) ? 0 : edit.value(of: id)
+    }
+
+    private func button(_ id: String) -> ToolButton? {
+        toolButtons.first { $0.id == id }
+    }
+
+    /// The chosen tool tapped: switched off or on (its value kept; its number shown, on). Auto on for the first time
+    /// is Photos' first guess.
     private func toggleTool(_ index: Int) {
         ruler.stop()
-        let adjustment = toolbox.adjustments[index]
-        if edit.value(of: adjustment.id) == 0 {
-            guard adjustment.id == HangarAdjustment.auto.id else { return }
-            edit.set(adjustment.id, to: 0.6)
-            edit.switchedOff.remove(adjustment.id)
-            ruler.set(0.6, animated: true)
-        } else if edit.switchedOff.contains(adjustment.id) {
-            edit.switchedOff.remove(adjustment.id)
+        let id = toolbox.adjustments[index].id
+        let on: Bool
+        if id == autoID {
+            on = !edit.applies(id)
+            if on, edit.value(of: id) == 0 { edit.set(id, to: Self.autoFirst) }
+            if on { edit.switchedOff.remove(id) } else { edit.switchedOff.insert(id) }
         } else {
-            edit.switchedOff.insert(adjustment.id)
+            on = edit.switchedOff.contains(id)
+            if on { edit.switchedOff.remove(id) } else { edit.switchedOff.insert(id) }
         }
+        ruler.set(shownValue(id), animated: true)
+        button(id)?.show(value: edit.value(of: id), switchedOff: edit.switchedOff.contains(id), number: on)
+        setRulerState(animated: true)
         render()
         commit()
     }
 
-    private func rulerBegan() {
-        toolButtons.first { $0.id == rulerTool }?.show(value: edit.value(of: rulerTool), switchedOff: false, number: true)
+    /// A tool as VoiceOver reads it in the strip: its name and value (Photos'), or Auto on or off.
+    private func spokenTool(_ index: Int) -> String {
+        let adjustment = toolbox.adjustments[index]
+        let id = adjustment.id
+        if id == autoID { return "\(adjustment.name), \(edit.applies(id) ? "On" : "Off")" }
+        if edit.switchedOff.contains(id) { return "\(adjustment.name), Off" }
+        return "\(adjustment.name), \(Int((edit.value(of: id) * 100).rounded()))%"
+    }
+
+    /// How much Auto is when it's first switched on.
+    private static let autoFirst = 0.42
+
+    /// A finger on the ruler: the tool's number shows (Photos').
+    private func rulerTouched() {
+        button(rulerTool)?.show(value: edit.value(of: rulerTool), switchedOff: edit.switchedOff.contains(rulerTool), number: true)
     }
 
     private func rulerMoved(_ value: Double) {
         edit.set(rulerTool, to: value)
         // Moving a tool switched off switches it on.
-        edit.switchedOff.remove(rulerTool)
-        toolButtons.first { $0.id == rulerTool }?.show(value: value, switchedOff: false, number: true)
+        if edit.switchedOff.remove(rulerTool) != nil { setRulerState(animated: true) }
+        button(rulerTool)?.show(value: value, switchedOff: false, number: true)
         render()
     }
 
+    /// The number stays until another tool is chosen.
     private func rulerEnded() {
         commit()
-        toolButtons.first { $0.id == rulerTool }?.show(value: edit.value(of: rulerTool), switchedOff: false, number: false)
     }
 
     // MARK: Filters
 
-    /// A filter passing the middle of the strip, or tapped: on the picture at once, kept when the strip rests.
+    /// A filter passing the middle of the strip, or tapped: on the picture at once (as much of it as it was left at),
+    /// kept when the strip rests.
     private func chooseFilter(_ index: Int) {
         let id = thumbnails[index].id
         edit.filter = id
-        if id != nil, edit.filterAmount == 0 { edit.filterAmount = 1 }
-        UIView.animate(withDuration: 0.2) { self.filterRuler.isHidden = id == nil }
+        edit.filterAmount = id.flatMap { filterAmounts[$0] } ?? 1
+        // Photos' ruler goes for Original, over a quarter of a second.
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.filterRuler.alpha = id == nil ? 0 : 1
+        }
         showName(thumbnails[index].name)
+        // Dragging through the filters, Photos hides its bars as it does for a filter's ruler.
+        if filters.isDragged { hideBars(true) }
         render()
     }
 
     private func filtersRested() {
+        hideBars(false)
         filterRuler.set(edit.filterAmount)
-        filterRuler.setEnabled(true, animated: true)
+        filterRuler.accessibilityLabel = "Intensity Slider for \(thumbnails[filters.chosen].name)"
+        filterRuler.setState(enabled: edit.filter != nil, dimmed: false, animated: true)
+        for thumbnail in thumbnails { thumbnail.applied = thumbnail.id == edit.filter }
         commit()
     }
 
+    private func filterRulerTouched() {}
+
     private func filterAmountMoved(_ value: Double) {
         edit.filterAmount = value
+        if let id = edit.filter { filterAmounts[id] = value }
+        loupe.show(amount: value)
+        hideBars(true)
         render()
+    }
+
+    private func filterAmountEnded() {
+        loupe.show(amount: nil)
+        hideBars(false)
+        commit()
+    }
+
+    /// Photos hides its bars while a filter's ruler is moved, and brings them back once it's let go.
+    private func hideBars(_ hide: Bool) {
+        guard hide != barsHidden else { return }
+        barsHidden = hide
+        // Back a quarter of a second after it's let go (a delay glass doesn't keep, so waited for here).
+        DispatchQueue.main.asyncAfter(deadline: .now() + (hide ? 0 : 0.25)) { [weak self] in
+            guard let self, self.barsHidden == hide else { return }
+            UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                for bar in [self.closeButton, self.historyBar, self.moreButton, self.doneButton, self.modeBar] as [UIView] {
+                    Chrome.show(bar, !hide)
+                }
+            }
+        }
     }
 
     /// Each filter on the picture as it's adjusted, small: made when Filters opens, again if the adjustments changed.
@@ -672,17 +827,22 @@ public final class HangarEditor: UIViewController {
     /// Every control as the edit is.
     private func sync() {
         for button in toolButtons {
-            button.show(value: edit.value(of: button.id), switchedOff: edit.switchedOff.contains(button.id), number: false)
+            button.show(value: edit.value(of: button.id), switchedOff: edit.switchedOff.contains(button.id),
+                        number: button.showsNumber)
         }
-        ruler.set(edit.value(of: rulerTool))
+        ruler.set(shownValue(rulerTool))
+        setRulerState(animated: entered)
         let chosen = thumbnails.firstIndex { $0.id == edit.filter } ?? 0
         if chosen != filters.chosen {
             filters.choose(chosen, animated: true)
             if mode == .filters { showName(thumbnails[chosen].name) }
         }
+        for thumbnail in thumbnails { thumbnail.applied = thumbnail.id == edit.filter }
+        if let id = edit.filter { filterAmounts[id] = edit.filterAmount }
         filterRuler.set(edit.filterAmount)
+        filterRuler.setState(enabled: edit.filter != nil, dimmed: false, animated: entered)
         if mode == .filters {
-            filterRuler.isHidden = edit.filter == nil
+            filterRuler.alpha = edit.filter == nil ? 0 : 1
             makeThumbnails()
         }
         undoButton.isEnabled = historyIndex > 0

@@ -8,7 +8,8 @@ public struct HangarAdjustment: Identifiable, Sendable {
     public let id: String
     /// Shown over the tools, in capitals, while it's the one chosen.
     public var name: String
-    /// Its tool's symbol: an SF Symbol's name.
+    /// Its tool's symbol: an SF Symbol's name, or one Hangar draws (`hangar.saturation` and `hangar.vibrance`, Photos'
+    /// rainbows, which no SF Symbol is).
     public var symbol: String
     /// Its values: -1 to 1 for one that goes either way, 0 to 1 for one that only adds.
     public var range: ClosedRange<Double>

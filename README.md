@@ -73,10 +73,11 @@ Everything the editor draws is from a `HangarStyle`: Photos' by default, followi
 
 ```swift
 var style = HangarStyle()
-style.accent = Tokens.signal           // the chosen mode's mark, a tool's value, a ruler's 0
+style.accent = Tokens.signal           // the chosen mode's mark, the ruler's mark at its value
+style.raised = Tokens.signalStrong     // a tool's ring and number above its default
 style.background = Tokens.background
-style.toolFill = Tokens.secondaryFill
-style.nameFont = Tokens.caption
+style.toolFill = Tokens.secondaryFill  // a tool's face
+style.nameFont = Tokens.caption        // the tool's or filter's name over the strip
 style.glass = false                    // plain bars rather than glass
 let editor = HangarEditor(image: image, style: style)
 ```

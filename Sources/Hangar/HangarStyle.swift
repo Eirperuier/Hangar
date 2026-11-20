@@ -1,31 +1,40 @@
 import UIKit
 
 /// How the editor looks: its colours, its type, whether its bars are glass. Photos' by default (`system`), light or
-/// dark as the device is; an app sets its own design's here, its tokens for these roles.
+/// dark as the device is, each read off Photos on iOS 27; an app sets its own design's here, its tokens for these roles.
 public struct HangarStyle {
     /// Behind the picture.
     public var background: UIColor = .systemBackground
-    /// Symbols and words, and the line where a ruler's value is read.
+    /// Symbols and words; a tool's ring and number at 0 or less; a ruler's marks.
     public var foreground: UIColor = .label
-    /// A tool's or filter's name over them, a mode not chosen.
-    public var secondary: UIColor = .secondaryLabel
-    /// What's chosen and what's changed: the mark at the chosen mode, an adjustment's value round its tool, a ruler's 0.
+    /// A tool's or filter's name over them.
+    public var secondary: UIColor = HangarStyle.dynamic(light: UIColor(white: 152 / 255, alpha: 1), dark: UIColor(white: 137 / 255, alpha: 1))
+    /// A mode not chosen: its symbol and name.
+    public var idle: UIColor = HangarStyle.dynamic(light: UIColor(white: 112 / 255, alpha: 1), dark: UIColor(white: 150 / 255, alpha: 1))
+    /// The mark at a ruler's value and at the chosen mode.
     public var accent: UIColor = .systemYellow
-    /// A tool's ring.
-    public var toolRing: UIColor = .systemGray2
-    /// The chosen tool's fill.
-    public var toolFill: UIColor = .systemGray4
-    /// A ruler's marks, and every fifth.
-    public var tick: UIColor = .systemGray3
-    public var majorTick: UIColor = .systemGray
+    /// An adjustment raised: its tool's ring and number (Photos' deeper yellow in light, its yellow in dark).
+    public var raised: UIColor = HangarStyle.dynamic(light: UIColor(red: 0.98, green: 0.667, blue: 0, alpha: 1), dark: .systemYellow)
+    /// A tool's face (Photos' is the thinnest material, which this is on the editor's background).
+    public var toolFill: UIColor = HangarStyle.dynamic(light: UIColor(white: 245 / 255, alpha: 1), dark: UIColor(white: 31 / 255, alpha: 1))
+    /// Auto's face, off and on, and its symbol on.
+    public var autoFill: UIColor = HangarStyle.dynamic(light: UIColor(white: 200 / 255, alpha: 1), dark: UIColor(white: 56 / 255, alpha: 1))
+    public var autoOnFill: UIColor = HangarStyle.dynamic(light: UIColor(white: 82 / 255, alpha: 1), dark: UIColor(white: 200 / 255, alpha: 1))
+    public var autoOnSymbol: UIColor = .systemBackground
+    /// The dot on a ruler where its default is, when the value's away from it.
+    public var marker: UIColor = HangarStyle.dynamic(light: UIColor(white: 172 / 255, alpha: 1), dark: UIColor(white: 84 / 255, alpha: 1))
     /// A chosen filter's frame.
     public var thumbnailFrame: UIColor = .white
+    /// The mode's name over an iPad's editor, and its colour.
+    public var titleFont: UIFont = .systemFont(ofSize: 14, weight: .medium)
+    public var title: UIColor = .secondaryLabel
     /// A tool's or filter's name, in capitals.
-    public var nameFont: UIFont = .systemFont(ofSize: 15)
-    /// The modes' names under their symbols.
-    public var modeFont: UIFont = .systemFont(ofSize: 11, weight: .medium)
-    /// The chosen mode's name.
-    public var chosenModeFont: UIFont = .systemFont(ofSize: 11, weight: .semibold)
+    public var nameFont: UIFont = HangarStyle.rounded(15.5)
+    /// The number on a tool while it's being changed.
+    public var numberFont: UIFont = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
+    /// The modes' names under their symbols, and the chosen one's (Photos' are the same, the chosen one darker).
+    public var modeFont: UIFont = .systemFont(ofSize: 10, weight: .medium)
+    public var chosenModeFont: UIFont = .systemFont(ofSize: 10, weight: .medium)
     /// Bars and buttons of glass (iOS 26 and later), or of the system's material before it; false for plain ones.
     public var glass: Bool = true
 
@@ -33,4 +42,15 @@ public struct HangarStyle {
 
     /// Photos'.
     public static var system: HangarStyle { HangarStyle() }
+
+    /// A colour for light and one for dark.
+    public static func dynamic(light: UIColor, dark: UIColor) -> UIColor {
+        UIColor { $0.userInterfaceStyle == .dark ? dark : light }
+    }
+
+    /// The system's rounded face, as Photos' names are.
+    public static func rounded(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let font = UIFont.systemFont(ofSize: size, weight: weight)
+        return font.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? font
+    }
 }

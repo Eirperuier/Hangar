@@ -123,10 +123,12 @@ struct ToolTests {
     }
 
     @MainActor @Test func everySymbolIsThere() {
-        for adjustment in HangarToolbox.standard.adjustments {
+        // Hangar draws its own two (Photos' rainbows); the rest are SF Symbols.
+        for adjustment in HangarToolbox.standard.adjustments where !adjustment.symbol.hasPrefix("hangar.") {
             #expect(UIImage(systemName: adjustment.symbol) != nil, "\(adjustment.symbol)")
         }
-        for symbol in ["dial.medium", "dial.medium.fill", "camera.filters", "xmark", "checkmark", "ellipsis", "arrow.uturn.backward", "arrow.uturn.forward"] {
+        for symbol in ["dial.low", "dial.low.fill", "camera.filters", "xmark", "checkmark", "ellipsis", "arrow.uturn.backward", "arrow.uturn.forward",
+                       "square.and.line.vertical.and.square.filled", "square.filled.and.line.vertical.and.square"] {
             #expect(UIImage(systemName: symbol) != nil, "\(symbol)")
         }
     }

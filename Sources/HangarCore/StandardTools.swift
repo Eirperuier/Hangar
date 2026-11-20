@@ -22,7 +22,7 @@ extension HangarAdjustment {
     }
 
     /// Shadows up and highlights down together (down and up taken the other way), a little more colour with them.
-    public static let brilliance = HangarAdjustment(id: "brilliance", name: "Brilliance", symbol: "circle.lefthalf.filled.righthalf.striped.horizontal") { image, value, _ in
+    public static let brilliance = HangarAdjustment(id: "brilliance", name: "Brilliance", symbol: "swirl.circle.righthalf.filled.inverse") { image, value, _ in
         image
             .applyingFilter("CIHighlightShadowAdjust", parameters: [
                 "inputShadowAmount": 0.55 * value,
@@ -50,23 +50,23 @@ extension HangarAdjustment {
     }
 
     /// The middle tones up or down, black and white kept.
-    public static let brightness = HangarAdjustment(id: "brightness", name: "Brightness", symbol: "sun.max") { image, value, _ in
+    public static let brightness = HangarAdjustment(id: "brightness", name: "Brightness", symbol: "sun.min.fill") { image, value, _ in
         image.perceptual { $0.applyingFilter("CIGammaAdjust", parameters: ["inputPower": pow(2, -0.55 * value)]) }
     }
 
     /// Where black is: the darkest tenth made black, or black lifted to a tenth grey.
-    public static let blackPoint = HangarAdjustment(id: "blackPoint", name: "Black Point", symbol: "circle.fill") { image, value, _ in
+    public static let blackPoint = HangarAdjustment(id: "blackPoint", name: "Black Point", symbol: "smallcircle.filled.circle.fill") { image, value, _ in
         let (scale, bias) = value > 0 ? (1 / (1 - 0.1 * value), -0.1 * value / (1 - 0.1 * value)) : (1 + 0.1 * value, -0.1 * value)
         return image.perceptual { $0.levels(scale: scale, bias: bias) }
     }
 
     /// Grey at the bottom, twice as much at the top.
-    public static let saturation = HangarAdjustment(id: "saturation", name: "Saturation", symbol: "drop.halffull") { image, value, _ in
+    public static let saturation = HangarAdjustment(id: "saturation", name: "Saturation", symbol: "hangar.saturation") { image, value, _ in
         image.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1 + value])
     }
 
     /// Colour where there's little of it, skin kept.
-    public static let vibrance = HangarAdjustment(id: "vibrance", name: "Vibrance", symbol: "triangle.lefthalf.filled") { image, value, _ in
+    public static let vibrance = HangarAdjustment(id: "vibrance", name: "Vibrance", symbol: "hangar.vibrance") { image, value, _ in
         image.applyingFilter("CIVibrance", parameters: ["inputAmount": value])
     }
 
@@ -76,7 +76,7 @@ extension HangarAdjustment {
     }
 
     /// Green to magenta.
-    public static let tint = HangarAdjustment(id: "tint", name: "Tint", symbol: "drop") { image, value, _ in
+    public static let tint = HangarAdjustment(id: "tint", name: "Tint", symbol: "drop.halffull") { image, value, _ in
         image.applyingFilter("CITemperatureAndTint", parameters: [
             "inputNeutral": CIVector(x: 6500, y: 0),
             "inputTargetNeutral": CIVector(x: 6500, y: -60 * value),
@@ -91,7 +91,7 @@ extension HangarAdjustment {
     }
 
     /// Contrast between neighbouring parts: an unsharp mask a hundredth of the picture wide.
-    public static let definition = HangarAdjustment(id: "definition", name: "Definition", symbol: "righttriangle", range: 0...1) { image, value, _ in
+    public static let definition = HangarAdjustment(id: "definition", name: "Definition", symbol: "righttriangle.split.diagonal", range: 0...1) { image, value, _ in
         let side = min(image.extent.width, image.extent.height)
         return image.clampedToExtent()
             .applyingFilter("CIUnsharpMask", parameters: [kCIInputRadiusKey: 0.012 * side, kCIInputIntensityKey: 0.5 * value])
@@ -99,7 +99,7 @@ extension HangarAdjustment {
     }
 
     /// Grain smoothed out.
-    public static let noiseReduction = HangarAdjustment(id: "noiseReduction", name: "Noise Reduction", symbol: "circle.dotted", range: 0...1) { image, value, _ in
+    public static let noiseReduction = HangarAdjustment(id: "noiseReduction", name: "Noise Reduction", symbol: "circle.bottomrighthalf.pattern.checkered", range: 0...1) { image, value, _ in
         image.clampedToExtent()
             .applyingFilter("CINoiseReduction", parameters: ["inputNoiseLevel": 0.04 * value, kCIInputSharpnessKey: 0.5])
             .cropped(to: image.extent)
@@ -107,7 +107,7 @@ extension HangarAdjustment {
 
     /// The edges darker (multiplied down to 30% at the corners), or lighter (screened up to 55% white); the middle
     /// kept, a soft ring between them.
-    public static let vignette = HangarAdjustment(id: "vignette", name: "Vignette", symbol: "circle.dashed.inset.filled") { image, value, _ in
+    public static let vignette = HangarAdjustment(id: "vignette", name: "Vignette", symbol: "circle.dotted.circle") { image, value, _ in
         let extent = image.extent
         let reach = 0.5 * hypot(extent.width, extent.height)
         let darkening = value > 0

@@ -48,9 +48,25 @@ enum Chrome {
         return button
     }
 
+    /// Shows or hides a bar (in an animation, fading): glass by its own coming and going, as faded glass shows as an
+    /// empty shell; anything else by its alpha.
+    static func show(_ view: UIView, _ shown: Bool) {
+        if #available(iOS 26.0, *), let glass = view as? UIVisualEffectView,
+           glass.effect is UIGlassEffect || glass.layer.value(forKey: glassKey) != nil {
+            if let effect = glass.effect as? UIGlassEffect { glass.layer.setValue(effect, forKey: glassKey) }
+            glass.effect = shown ? glass.layer.value(forKey: glassKey) as? UIGlassEffect : nil
+            glass.contentView.alpha = shown ? 1 : 0
+            glass.alpha = 1
+        } else {
+            view.alpha = shown ? 1 : 0
+        }
+    }
+
+    private static let glassKey = "hangar.glass"
+
     /// Lays out a capsule's corners where they aren't glass's own.
     static func round(_ view: UIVisualEffectView) {
-        if #available(iOS 26.0, *), view.effect is UIGlassEffect { return }
+        if #available(iOS 26.0, *), view.effect is UIGlassEffect || view.layer.value(forKey: glassKey) != nil { return }
         view.layer.cornerRadius = min(view.bounds.width, view.bounds.height) / 2
     }
 }
