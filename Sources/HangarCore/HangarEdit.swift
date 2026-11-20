@@ -1,7 +1,7 @@
 import Foundation
 
 /// What's been done to a picture: its crop and the rest of its geometry, a value for each adjustment, a filter and how
-/// much of it; never its pixels. The
+/// much of it, what an app's own modes keep; and the steps made of pixels (`HangarStep`), by their pictures' ids. The
 /// picture is drawn from it each time (`HangarRenderer`), so an edit can be changed later, undone a step at a time,
 /// kept beside the original and opened again, as Photos keeps its edits.
 public struct HangarEdit: Hashable, Sendable, Codable {
@@ -16,14 +16,30 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     /// Crop's: tilted, straightened, cropped, turned and flipped, before anything else (Straighten, Vertical and
     /// Horizontal switched off as adjustments are, in `switchedOff`).
     public var geometry: HangarGeometry
+    /// Pictures made from the one before, in turn, under everything else (`HangarStep`).
+    public var steps: [HangarStep]
+    /// What an app's own modes keep, by the mode's id: theirs to read (`HangarValue.decoded(as:)`).
+    public var modules: [String: HangarValue]
 
     public init(adjustments: [String: Double] = [:], switchedOff: Set<String> = [], filter: String? = nil, filterAmount: Double = 1,
-                geometry: HangarGeometry = .identity) {
+                geometry: HangarGeometry = .identity, steps: [HangarStep] = [], modules: [String: HangarValue] = [:]) {
         self.adjustments = adjustments
         self.switchedOff = switchedOff
         self.filter = filter
         self.filterAmount = filterAmount
         self.geometry = geometry
+        self.steps = steps
+        self.modules = modules
+    }
+
+    /// A step added after the others. One that makes the picture larger (its frame past the picture's edges) keeps
+    /// the crop on the same part of it.
+    public mutating func add(_ step: HangarStep) {
+        steps.append(step)
+        let reach = step.reach
+        guard reach != HangarStep.whole, let crop = geometry.crop else { return }
+        geometry.crop = CGRect(x: (crop.minX - reach.minX) / reach.width, y: (crop.minY - reach.minY) / reach.height,
+                               width: crop.width / reach.width, height: crop.height / reach.height)
     }
 
     /// The geometry as it's drawn: tools switched off at 0.
@@ -49,11 +65,12 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     /// Whether it changes nothing: the original as it was.
     public var isOriginal: Bool {
         !adjustments.keys.contains(where: applies) && (filter == nil || filterAmount == 0) && appliedGeometry.isIdentity
+            && steps.isEmpty
     }
 
     // An edit kept by an older version opens in a newer one: whatever it lacks is untouched.
     private enum CodingKeys: String, CodingKey {
-        case adjustments, switchedOff, filter, filterAmount, geometry
+        case adjustments, switchedOff, filter, filterAmount, geometry, steps, modules
     }
 
     public init(from decoder: any Decoder) throws {
@@ -63,5 +80,7 @@ public struct HangarEdit: Hashable, Sendable, Codable {
         filter = try container.decodeIfPresent(String.self, forKey: .filter)
         filterAmount = try container.decodeIfPresent(Double.self, forKey: .filterAmount) ?? 1
         geometry = try container.decodeIfPresent(HangarGeometry.self, forKey: .geometry) ?? .identity
+        steps = try container.decodeIfPresent([HangarStep].self, forKey: .steps) ?? []
+        modules = try container.decodeIfPresent([String: HangarValue].self, forKey: .modules) ?? [:]
     }
 }

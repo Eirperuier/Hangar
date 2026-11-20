@@ -1,6 +1,6 @@
 # Hangar
 
-The editor you know from Photos, for your app's pictures: Adjust, Filters and Crop, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools are yours to add to and its look is yours to set, so it can speak your app's design rather than Apple's.
+The editor you know from Photos, for your app's pictures: Adjust, Filters and Crop, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools, its modes and what More offers are yours to add to, and its look is yours to set, so it can speak your app's design rather than Apple's.
 
 Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture flies in and out on Flight's springs, and Flight's viewer (`ImagePreview`) is where it's most at home.
 
@@ -68,6 +68,28 @@ let editor = HangarEditor(image: image, toolbox: toolbox)
 
 Each runs on any thread, on the picture at the size being drawn (`mixed(toward:_:)` and `perceptual(_:)` help): `context.scale` says how many of the full picture's pixels that is, so a tool working over a distance looks the same small and full size. `context.source` is the picture as it came.
 
+## Your own modes
+
+A mode is a `HangarModule`: its button on the mode bar, its controls, and what it does to the edit. Adjust, Filters and Crop are three (`HangarAdjustModule`, `HangarFiltersModule`, `HangarCropModule`); give the editor yours among them, in the order the mode bar shows them:
+
+```swift
+let editor = HangarEditor(image: image, modules: [HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(), Markup()])
+```
+
+The editor keeps what they share (the top bar, the mode bar, the picture, the name over the tools, undo, flying in and out) and gives a mode its host (`HangarHost`): the edit to change, `render()` to see it as it goes, `commit()` for a step to undo to, where its controls go (`HangarLayout`, Photos' measures on a phone and an iPad), the picture as the canvas draws it, the bars to hide while the picture wants seeing whole. What a mode keeps goes in the edit, under its id (`edit.modules`), so it's undone, copied and kept with the rest.
+
+## Pictures made elsewhere
+
+Some changes are pixels, not values: an object erased, the background taken out, more of the scene drawn round it, the whole of it made larger, by a model on your server or by Vision on the device. Give the editor a `HangarJob` (from a mode, `host.run(job)`, or from More, as an `HangarAction`): it's given the picture as the edit has it so far, and what it makes becomes a step (`HangarStep`), one to undo, with the picture shimmering meanwhile and Cancel stopping it.
+
+```swift
+editor.actions = [HangarAction(title: "Upscale", symbol: "arrow.up.left.and.arrow.down.right", job: HangarJob(tool: "upscale", name: "Upscaling") { picture in
+    HangarMade(try await server.upscale(picture))      // twice as large: the whole picture is, from then on
+})]
+```
+
+A step's pictures are kept by the app (`HangarAssets`: a folder by default, your storage or server if you like); the edit keeps only their ids. A step is laid over the picture before it where its frame says (more round it for a picture made larger) and as much as its mask says, and the crop, adjustments and filter are drawn on top, so they stay values: change Exposure after the background's gone, and the background stays gone. The example's Remove Background (Vision) is made this way.
+
 ## Your own look
 
 Everything the editor draws is from a `HangarStyle`: Photos' by default, following the device's light and dark. Give it your design's tokens for its roles:
@@ -85,7 +107,7 @@ let editor = HangarEditor(image: image, style: style)
 
 ## HangarCore
 
-What an edit is and how a picture is drawn from it, without the editor: `HangarRenderer(toolbox:).render(edit, to: cgImage)` for a thumbnail, a share, or a server, and `apply(_:to:context:)` to do it to a `CIImage` of your own.
+What an edit is and how a picture is drawn from it, without the editor: `HangarRenderer(toolbox:assets:).render(edit, to: cgImage)` for a thumbnail, a share, or a server, and `apply(_:to:context:)` to do it to a `CIImage` of your own.
 
 ## Installation
 

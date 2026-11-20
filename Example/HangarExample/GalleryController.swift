@@ -157,6 +157,11 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let page = preview.page
         let editor = HangarEditor(image: photo.original, edit: edit ?? photo.edit)
         editor.mode = mode
+        // The app's own: in More, after Photos'.
+        editor.actions = [.removeBackground]
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "testSteps") { editor.actions += [.testInvert, .testExpand] }
+        #endif
         editor.onDone = { [weak self] result in
             photo.keep(result) { self?.collection.reloadItems(at: [IndexPath(item: index, section: 0)]) }
         }

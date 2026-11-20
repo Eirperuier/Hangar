@@ -1,11 +1,56 @@
 import HangarCore
 import UIKit
 
-// Crop, as Photos has it (iOS 27): Flip and Rotate where undo and redo were, Aspect Ratio beside More, RESET under
-// the top bar once anything's changed; Straighten, Vertical and Horizontal on the tools' strip and ruler (their
-// numbers in degrees); the picture on the stage (`CropStage`), its box fitted to the canvas Photos keeps for it (10 in
-// from the sides, from 64 under the top of the safe area to 141 over the mode bar).
-extension HangarEditor {
+/// Photos' Crop (iOS 27): Flip and Rotate where Undo and Redo were, Aspect Ratio beside More, RESET once anything's
+/// changed; Straighten, Vertical and Horizontal on a strip and ruler of their own (their numbers in degrees); the
+/// picture whole on a stage of its own (`CropStage`), its box fitted to the canvas Photos keeps for it.
+@MainActor
+public final class HangarCropModule: HangarModule {
+    public let item = HangarModeItem(id: HangarMode.crop.id, name: "Crop", symbol: "crop.rotate", spoken: "Crop and Rotate")
+
+    private weak var host: (any HangarHost)?
+    private var h: any HangarHost { host! }
+    private var edit: HangarEdit {
+        get { h.edit }
+        set { h.edit = newValue }
+    }
+    private var style: HangarStyle { h.style }
+
+    private var stage: CropStage!
+    private let geometryTools = Strip()
+    private var geometryButtons: [ToolButton] = []
+    private var geometryRuler: Ruler!
+    private var aspectPicker: AspectPicker!
+    /// Flip and Rotate, where undo and redo are in the other modes.
+    private var geometryBar: UIVisualEffectView!
+    private var flipButton: UIButton!
+    private var rotateButton: UIButton!
+    /// Aspect Ratio and More on one capsule.
+    private var cropBar: UIVisualEffectView!
+    private var aspectButton: UIButton!
+    private var cropMoreButton: UIButton!
+    private let resetButton = UIButton(type: .custom)
+    private let badge = BadgeLabel()
+    private let lockedToast = BadgeLabel()
+    private var geometryTool = HangarGeometry.straightenID
+    private var aspectOpen = false
+    /// The tone-edited picture the stage shows, and the edit it was made for.
+    private var stagePictureFor: HangarEdit?
+    private var badgeTimer: Timer?
+    private var toastTimer: Timer?
+    /// Where the stage shows the picture (the canvas Photos keeps for Crop).
+    private var cropRegion = CGRect.zero
+    private var sideways = false
+    private var isChosen = false
+
+    public init() {}
+
+    public var ownsTopBar: Bool { true }
+    /// Photos' iPad shows no mode's name in Crop's top bar (RESET is there).
+    public var showsTitle: Bool { false }
+    public var pictureFrame: CGRect? { isChosen ? stage.box : nil }
+    public var chrome: [UIView] { cropChrome }
+
     /// Straighten, Vertical and Horizontal: their ids, names, symbols and degrees at the ends of their rulers.
     static let geometryTools: [(id: String, name: String, symbol: String, degrees: Double)] = [
         (HangarGeometry.straightenID, "Straighten", "circle.and.line.horizontal.fill", 45),
@@ -14,13 +59,24 @@ extension HangarEditor {
     ]
 
     /// Crop's bars and controls (its badge and notice come and go on their own).
-    var cropChrome: [UIView] {
+    private var cropChrome: [UIView] {
         [geometryBar, cropBar, resetButton, geometryTools, geometryRuler, aspectPicker]
     }
 
     // MARK: Building
 
-    func setUpCrop() {
+    public func load(in host: any HangarHost) {
+        self.host = host
+        let style = host.style
+        stage = CropStage(style: style)
+        geometryRuler = Ruler(style: style)
+        aspectPicker = AspectPicker(style: style)
+        geometryBar = Chrome.capsule(style)
+        flipButton = Chrome.plainButton("arrow.left.and.right.righttriangle.left.righttriangle.right", label: "Flip", style: style)
+        rotateButton = Chrome.plainButton("rotate.left", label: "Rotate", style: style)
+        cropBar = Chrome.capsule(style)
+        aspectButton = Chrome.plainButton("aspectratio", label: "Aspect Ratio", style: style)
+        cropMoreButton = Chrome.plainButton("ellipsis", label: "More", style: style)
         geometryButtons = Self.geometryTools.map { tool in
             let adjustment = HangarAdjustment(id: tool.id, name: tool.name, symbol: tool.symbol, range: -1...1) { image, _, _ in image }
             let button = ToolButton(adjustment, style: style)
@@ -51,7 +107,7 @@ extension HangarEditor {
             guard let self else { return }
             self.stageChanged(g)
             self.resetButton.isHidden = !self.cropChanged
-            self.commit()
+            self.h.commit()
         }
         stage.onTouch = { [weak self] in self?.hideBadge() }
         stage.onGesture = { [weak self] moving in self?.hideCropBars(moving) }
@@ -64,7 +120,7 @@ extension HangarEditor {
         aspectButton.addAction(UIAction { [weak self] _ in self?.toggleAspect() }, for: .touchUpInside)
         cropMoreButton.showsMenuAsPrimaryAction = true
         cropMoreButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
-            completion(self?.moreActions() ?? [])
+            completion(self?.host?.moreMenu() ?? [])
         }])
         cropBar.contentView.addSubview(aspectButton)
         cropBar.contentView.addSubview(cropMoreButton)
@@ -95,24 +151,27 @@ extension HangarEditor {
         aspectPicker.onChoose = { [weak self] choice in self?.chooseAspect(choice) }
         aspectPicker.onUpright = { [weak self] _ in self.map { $0.chooseAspect($0.aspectPicker.chosen) } }
 
-        for chrome in cropChrome + [badge, lockedToast] { view.addSubview(chrome) }
+        host.add(stage, at: .picture)
+        for chrome in cropChrome + [badge, lockedToast] { host.add(chrome, at: .controls) }
         for chrome in cropChrome + [badge, lockedToast] { chrome.isHidden = true }
     }
 
     // MARK: Layout
 
-    func layoutCrop(sideways: Bool, safe: UIEdgeInsets) {
-        let bounds = view.bounds
-        geometryBar.frame = CGRect(x: historyBar.frame.minX, y: historyBar.frame.minY, width: 96, height: 44)
+    public func layout(_ layout: HangarLayout) {
+        let bounds = layout.bounds, safe = layout.safeArea
+        sideways = layout.sideways
+        stage.frame = bounds
+        geometryBar.frame = CGRect(x: layout.history.minX, y: layout.history.minY, width: 96, height: 44)
         flipButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         rotateButton.frame = CGRect(x: 52, y: 0, width: 44, height: 44)
-        cropBar.frame = CGRect(x: moreButton.frame.maxX - 96, y: moreButton.frame.minY, width: 96, height: 44)
+        cropBar.frame = CGRect(x: layout.more.maxX - 96, y: layout.more.minY, width: 96, height: 44)
         aspectButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         cropMoreButton.frame = CGRect(x: 52, y: 0, width: 44, height: 44)
         Chrome.round(geometryBar)
         Chrome.round(cropBar)
         // Photos' crop canvas starts 20 under the top bar.
-        let top = closeButton.frame.maxY + 20
+        let top = layout.cancel.maxY + 20
         if sideways {
             // Photos' iPad: the tools and ruler 9 further right than Adjust's (108 and 66 in), the canvas 141 in from
             // each side (its side bars' width) and 125 off the bottom; the picker one row along the bottom, the tools
@@ -120,9 +179,9 @@ extension HangarEditor {
             let right = bounds.maxX - safe.right
             geometryTools.axis = .along
             geometryTools.reach = 361
-            geometryTools.frame = CGRect(x: right - 108, y: tools.frame.minY, width: ToolButton.size, height: tools.frame.height)
+            geometryTools.frame = CGRect(x: right - 108, y: layout.tools.minY, width: ToolButton.size, height: layout.tools.height)
             geometryRuler.axis = .along
-            geometryRuler.frame = CGRect(x: right - Ruler.thickness, y: ruler.frame.minY, width: Ruler.thickness, height: ruler.frame.height)
+            geometryRuler.frame = CGRect(x: right - Ruler.thickness, y: layout.ruler.minY, width: Ruler.thickness, height: layout.ruler.height)
             cropRegion = CGRect(x: safe.left + 141, y: top, width: bounds.width - safe.left - safe.right - 282, height: bounds.maxY - 125 - top)
             aspectPicker.inline = true
             aspectPicker.frame = CGRect(x: safe.left, y: bounds.maxY - 49 - 20, width: bounds.width - safe.left - safe.right, height: 40)
@@ -133,12 +192,12 @@ extension HangarEditor {
             badge.center = CGPoint(x: geometryTools.frame.minX - 36 - badge.bounds.width / 2, y: bounds.midY)
         } else {
             aspectPicker.inline = false
-            let base = modeBar.frame.minY
+            let base = layout.modeBar.minY
             geometryTools.axis = .across
             geometryTools.reach = nil
-            geometryTools.frame = tools.frame
+            geometryTools.frame = layout.tools
             geometryRuler.axis = .across
-            geometryRuler.frame = ruler.frame
+            geometryRuler.frame = layout.ruler
             cropRegion = CGRect(x: safe.left + 10, y: top, width: bounds.width - safe.left - safe.right - 20, height: base - 141 - top)
             // Photos' picker: its buttons' middles 90.5 over the mode bar, its row's 32.
             aspectPicker.frame = CGRect(x: safe.left, y: base - 141, width: bounds.width - safe.left - safe.right, height: 141)
@@ -154,7 +213,7 @@ extension HangarEditor {
         let resetWidth = ceil(("RESET" as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 15)]).width) + 10
         // Under the top bar on a phone; on an iPad in it, in the middle (where the title is in the other modes).
         resetButton.frame = sideways
-            ? CGRect(x: (bounds.midX - resetWidth / 2).rounded(), y: closeButton.frame.midY - 13, width: resetWidth, height: 26)
+            ? CGRect(x: (bounds.midX - resetWidth / 2).rounded(), y: layout.cancel.midY - 13, width: resetWidth, height: 26)
             : CGRect(x: (cropRegion.midX - resetWidth / 2).rounded(), y: cropRegion.minY + 2, width: resetWidth, height: 26)
         lockedToast.sizeToFit()
         lockedToast.frame = CGRect(x: (resetButton.frame.midX - lockedToast.bounds.width / 2).rounded(), y: resetButton.frame.maxY + 1,
@@ -164,29 +223,39 @@ extension HangarEditor {
 
     // MARK: Coming and going
 
-    /// Crop's chrome shown, the others' hidden (in a cross-dissolve).
-    func showCropChrome(_ cropping: Bool) {
-        historyBar.isHidden = cropping
-        moreButton.isHidden = cropping
+    /// Crop's chrome shown or hidden (in a cross-dissolve).
+    public func show(_ cropping: Bool) {
+        isChosen = cropping
+        if cropping { h.showName(nil) }
         geometryBar.isHidden = !cropping
         cropBar.isHidden = !cropping
         geometryTools.isHidden = !cropping || (aspectOpen && !sideways)
         geometryRuler.isHidden = !cropping || (aspectOpen && !sideways)
-        // Photos' iPad shows no mode's name in Crop's top bar (RESET is there).
-        titleLabel.isHidden = !sideways || cropping
         aspectPicker.isHidden = !cropping || !aspectOpen
         badge.isHidden = !cropping
         lockedToast.isHidden = !cropping
         resetButton.isHidden = !cropping || !cropChanged
     }
 
+    public func stop() {
+        geometryRuler.stop()
+    }
+
+    public func menu() -> [UIMenuElement] {
+        [lockAction()]
+    }
+
+    public func closing() {
+        stage.alpha = 0
+    }
+
     /// Into Crop: the picture whole on the stage, flying from where the canvas shows the crop to the box.
-    func enterCrop() {
-        guard let preview else { return }
-        view.layoutIfNeeded()
+    public func entered() {
+        guard let preview = h.base?.image else { return }
+        h.layoutNow()
         aspectOpen = false
         setAspectButton(open: false)
-        showCropChrome(true)
+        show(true)
         let index = Self.geometryTools.firstIndex { $0.id == geometryTool } ?? 0
         geometryTools.choose(index, animated: false)
         chooseGeometryTool(index)
@@ -197,47 +266,47 @@ extension HangarEditor {
         stage.alpha = 0
         stage.showOverlay(false, animated: false)
         makeStagePicture { [weak self] picture in
-            guard let self, self.mode == .crop else { return }
+            guard let self, self.isChosen else { return }
             self.stage.show(picture)
             self.stage.alpha = 1
-            self.canvas.alpha = 0
-            if self.entered {
-                self.stage.fly(from: self.canvas.frame)
+            self.h.showCanvas(false)
+            if self.h.hasEntered {
+                self.stage.fly(from: self.h.canvasFrame)
                 self.stage.showOverlay(true, animated: true)
             } else {
                 self.stage.showOverlay(true, animated: false)
             }
         }
-        syncCrop()
+        sync()
     }
 
     /// Out of Crop: the box flies to where the canvas will show the crop, then the canvas takes over.
-    func leaveCrop() {
+    public func left() {
+        guard !stage.isHidden else { return }
         geometryRuler.stop()
         stage.cancelPending()
         edit.geometry = stage.current
         hideBadge()
         lockedToast.alpha = 0
-        shapePreview()
-        view.layoutIfNeeded()
-        render()
+        h.render()
+        h.layoutNow()
         stage.showOverlay(false, animated: true)
-        stage.fly(to: canvas.frame) { [weak self] in
-            guard let self, self.mode != .crop else { return }
-            self.canvas.alpha = 1
+        stage.fly(to: h.canvasFrame) { [weak self] in
+            guard let self, !self.isChosen else { return }
+            self.h.showCanvas(true)
             self.stage.isHidden = true
         }
     }
 
     /// The picture with its adjustments and filter, not its geometry: what the stage shows, made off the main
     /// thread (once for the edit's tones).
-    func makeStagePicture(_ done: @escaping @MainActor (CGImage) -> Void) {
-        guard let preview, let previewContext else { return }
+    private func makeStagePicture(_ done: @escaping @MainActor (CGImage) -> Void) {
+        guard let (preview, previewContext) = h.base else { return }
         var tones = edit
         tones.geometry = .identity
         tones.switchedOff.subtract(HangarGeometry.toolIDs)
         if stagePictureFor == tones, let image = stage.image { return done(image) }
-        let renderer = renderer
+        let renderer = h.renderer
         Task.detached(priority: .userInitiated) {
             let out = renderer.apply(tones, to: preview, context: previewContext)
             guard let picture = HangarRenderer.context.createCGImage(out, from: preview.extent, format: .RGBA8,
@@ -249,19 +318,23 @@ extension HangarEditor {
         }
     }
 
-    /// The stage shown afresh for the edit (pasted, reverted).
-    func reloadStage() {
-        guard mode == .crop, let preview else { return }
+    /// The stage shown afresh for the edit (pasted, reverted, a step made).
+    private func reloadStage() {
+        guard isChosen, let preview = h.base?.image else { return }
         stage.load(nil, size: preview.extent.size, geometry: edit.geometry, off: edit.switchedOff)
         makeStagePicture { [weak self] picture in self?.stage.show(picture) }
-        syncCrop()
+    }
+
+    public func pictureChanged() {
+        stagePictureFor = nil
+        reloadStage()
     }
 
     // MARK: The tools
 
     /// A tool's value as its ruler shows it: Photos shows Straighten and Horizontal the other way once flipped,
     /// and a tool switched off at 0.
-    func shownGeometryValue(_ id: String) -> Double {
+    private func shownGeometryValue(_ id: String) -> Double {
         guard !edit.switchedOff.contains(id) else { return 0 }
         return geometrySign(id) * edit.geometry.value(of: id)
     }
@@ -332,22 +405,33 @@ extension HangarEditor {
         if aspectOpen { aspectPicker.set(chosen: currentChoice(), upright: currentUpright()) }
     }
 
-    /// Crop's controls as the edit is.
-    func syncCrop() {
+    /// Crop's controls as the edit is; the stage too, if the edit's changed under it (pasted, reverted).
+    public func sync() {
+        if isChosen, !stage.isHidden {
+            let off = edit.switchedOff.intersection(HangarGeometry.toolIDs)
+            if stage.current != edit.geometry || stage.off != off {
+                reloadStage()
+            } else {
+                var tones = edit
+                tones.geometry = .identity
+                tones.switchedOff.subtract(HangarGeometry.toolIDs)
+                if stagePictureFor != nil, stagePictureFor != tones { makeStagePicture { [weak self] picture in self?.stage.show(picture) } }
+            }
+        }
         for button in geometryButtons {
             button.show(value: geometrySign(button.id) * edit.geometry.value(of: button.id), switchedOff: edit.switchedOff.contains(button.id),
                         number: button.showsNumber)
         }
         geometryRuler.set(shownGeometryValue(geometryTool))
-        setGeometryRulerState(animated: entered)
-        if mode == .crop {
+        setGeometryRulerState(animated: h.hasEntered)
+        if isChosen {
             resetButton.isHidden = !cropChanged
             aspectButton.accessibilityValue = currentChoice().name
         }
     }
 
     /// Whether there's anything for RESET to undo: Photos' leaves the turns and the flip.
-    var cropChanged: Bool {
+    private var cropChanged: Bool {
         let g = edit.geometry
         if g.straighten != 0 || g.vertical != 0 || g.horizontal != 0 || g.aspect != nil { return true }
         guard let crop = g.crop else { return false }
@@ -367,8 +451,9 @@ extension HangarEditor {
 
     /// Photos' bars go while a handle, the picture or a pinch moves, and come back as it's let go.
     private func hideCropBars(_ hidden: Bool) {
-        let bars: [UIView] = [closeButton, geometryBar, cropBar, doneButton, resetButton, geometryTools, geometryRuler, aspectPicker, modeBar]
+        let bars: [UIView] = [geometryBar, cropBar, resetButton, geometryTools, geometryRuler, aspectPicker]
         if hidden { hideBadge() }
+        h.showBars(!hidden, duration: hidden ? 0.25 : 0.2, delay: 0)
         UIView.animate(withDuration: hidden ? 0.25 : 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             for bar in bars { Chrome.show(bar, !hidden) }
             if hidden { self.lockedToast.alpha = 0 }
@@ -378,9 +463,9 @@ extension HangarEditor {
     // MARK: The badge
 
     /// The tool's name on its capsule, for a second and a half after it last changed (Photos').
-    func showBadge(_ name: String) {
+    private func showBadge(_ name: String) {
         badge.text = name.uppercased()
-        view.setNeedsLayout()
+        h.view.setNeedsLayout()
         badgeTimer?.invalidate()
         UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.badge.alpha = 1 }
         badgeTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
@@ -388,7 +473,7 @@ extension HangarEditor {
         }
     }
 
-    func hideBadge() {
+    private func hideBadge() {
         badgeTimer?.invalidate()
         UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.badge.alpha = 0 }
     }
@@ -435,13 +520,13 @@ extension HangarEditor {
 
     /// The picture's shape as it's shown (turned with it).
     private var originalRatio: Double {
-        guard let preview else { return 1 }
+        guard let preview = h.base?.image else { return 1 }
         let r = Double(preview.extent.width / preview.extent.height)
         return edit.geometry.isSideways ? 1 / r : r
     }
 
     private var wallpaperRatio: Double {
-        let size = view.window?.windowScene?.screen.bounds.size ?? view.bounds.size
+        let size = h.view.window?.windowScene?.screen.bounds.size ?? h.view.bounds.size
         return Double(max(size.width, size.height) / min(size.width, size.height))
     }
 
@@ -512,7 +597,7 @@ extension HangarEditor {
     }
 
     /// More's Lock Aspect Ratio (Photos'): held to the crop's shape as it is, or let go.
-    func lockAction() -> UIAction {
+    private func lockAction() -> UIAction {
         let locked = edit.geometry.aspect != nil
         return UIAction(title: locked ? "Unlock Aspect Ratio" : "Lock Aspect Ratio",
                         image: UIImage(systemName: locked ? "lock.open" : "lock")) { [weak self] _ in
@@ -521,7 +606,7 @@ extension HangarEditor {
                 self.stage.setAspect(nil)
                 self.lock(false)
             } else {
-                let crop = self.stage.current.cropRect(for: self.preview?.extent.size ?? .zero)
+                let crop = self.stage.current.cropRect(for: self.h.base?.image.extent.size ?? .zero)
                 self.stage.setAspect(HangarRatio(Double(crop.width), Double(crop.height)))
                 self.lock(true)
                 self.showLockedToast()
