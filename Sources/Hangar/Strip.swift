@@ -449,6 +449,9 @@ final class ToolButton: UIControl, StripItem {
     private var switchedOff = false
     /// Whether its number shows (from a finger on the ruler or its being switched on, until another tool's chosen).
     private(set) var showsNumber = false
+    /// What its number counts at the end of its range: 100 (percent) for an adjustment; Crop's in degrees (45 for
+    /// Straighten, 30 for Vertical and Horizontal), as Photos shows them.
+    var numberScale: Double = 100 { didSet { update() } }
 
     init(_ adjustment: HangarAdjustment, style: HangarStyle) {
         id = adjustment.id
@@ -540,13 +543,19 @@ final class ToolButton: UIControl, StripItem {
         }
         CATransaction.commit()
         number.textColor = ring
-        number.text = Self.formatter.string(from: NSNumber(value: v * 100))
+        number.text = Self.formatter.string(from: NSNumber(value: shownNumber(v)))
         let numbered = showsNumber && !isAuto
         number.alpha = numbered ? 1 : 0
         symbol.alpha = numbered ? 0 : 1
         alpha = switchedOff && !isAuto ? 0.3 : 1
-        accessibilityValue = isAuto ? (autoOn ? "On" : "Off") : switchedOff ? "Off" : "\(number.text ?? "0")%"
+        accessibilityValue = isAuto ? (autoOn ? "On" : "Off") : switchedOff ? "Off" : "\(Self.formatter.string(from: NSNumber(value: v * 100)) ?? "0")%"
         accessibilityTraits = chosen ? [.button, .selected] : .button
+    }
+
+    /// The number shown for a value: -0 shown as 0.
+    private func shownNumber(_ v: Double) -> Double {
+        let n = (v * numberScale).rounded()
+        return n == 0 ? 0 : n
     }
 
     /// Photos' symbols are 19 points (its wand, Auto's, larger and bolder: about 25 across, solid).

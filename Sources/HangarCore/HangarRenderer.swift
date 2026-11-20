@@ -2,8 +2,8 @@ import CoreGraphics
 import CoreImage
 import Foundation
 
-/// Draws a picture from an edit: every adjustment that applies, in the toolbox's order, then the filter as much as
-/// its amount. Any thread; the picture comes out the size it went in.
+/// Draws a picture from an edit: its geometry (the crop, turned and flipped), then every adjustment that applies, in
+/// the toolbox's order, then the filter as much as its amount. Any thread.
 public struct HangarRenderer: Sendable {
     public var toolbox: HangarToolbox
 
@@ -11,7 +11,8 @@ public struct HangarRenderer: Sendable {
         self.toolbox = toolbox
     }
 
-    /// The edit applied to `image` (which is `context.source`, or the source with something done to it first).
+    /// The edit's adjustments and filter applied to `image` (the picture, shaped already): it comes out the size it
+    /// went in.
     public func apply(_ edit: HangarEdit, to image: CIImage, context: HangarRenderContext) -> CIImage {
         var out = image
         for adjustment in toolbox.adjustments where edit.applies(adjustment.id) {
@@ -28,9 +29,19 @@ public struct HangarRenderer: Sendable {
     /// Off the main thread: a large picture takes a while.
     public func render(_ edit: HangarEdit, to picture: CGImage, orientation: CGImagePropertyOrientation = .up) -> CGImage? {
         let source = CIImage(cgImage: picture).oriented(orientation)
-        let output = apply(edit, to: source, context: HangarRenderContext(source: source))
+        let shaped = shape(edit, source)
+        // Auto reads the whole picture, as the editor's does.
+        let context = HangarRenderContext(source: source).resized(to: shaped, scale: 1)
+        let output = apply(edit, to: shaped, context: context)
         let space = picture.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        return Self.context.createCGImage(output, from: source.extent, format: .RGBA8, colorSpace: space)
+        return Self.context.createCGImage(output, from: shaped.extent, format: .RGBA8, colorSpace: space)
+    }
+
+    /// The picture with the edit's geometry: cropped, turned and flipped, its corner at the origin.
+    public func shape(_ edit: HangarEdit, _ image: CIImage) -> CIImage {
+        let g = edit.appliedGeometry
+        guard !g.isIdentity else { return image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY)) }
+        return g.apply(to: image)
     }
 
     /// One for every render: Core Image's contexts are made to be shared across threads, and costly to make.

@@ -11,6 +11,8 @@ final class ModeBar: UIView {
         let symbol: String
         /// Its symbol when chosen.
         let chosenSymbol: String
+        /// What VoiceOver says (its name if nil).
+        var spoken: String? = nil
     }
 
     var axis: Ruler.Axis = .across { didSet { setNeedsLayout() } }
@@ -49,7 +51,8 @@ final class ModeBar: UIView {
             control.addSubview(icon)
             control.addSubview(label)
             control.isAccessibilityElement = true
-            control.accessibilityLabel = mode.name
+            control.accessibilityLabel = mode.spoken ?? mode.name
+            control.accessibilityIdentifier = "edit.tool.\(mode.id)"
             control.addAction(UIAction { [weak self] _ in self?.tap(mode.id) }, for: .touchUpInside)
             surface.contentView.addSubview(control)
             items.append((mode, icon, label, control))

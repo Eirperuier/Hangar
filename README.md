@@ -1,6 +1,6 @@
 # Hangar
 
-The editor you know from Photos, for your app's pictures: Adjust and Filters, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools are yours to add to and its look is yours to set, so it can speak your app's design rather than Apple's.
+The editor you know from Photos, for your app's pictures: Adjust, Filters and Crop, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools are yours to add to and its look is yours to set, so it can speak your app's design rather than Apple's.
 
 Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture flies in and out on Flight's springs, and Flight's viewer (`ImagePreview`) is where it's most at home.
 
@@ -15,9 +15,10 @@ Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture f
 |---|---|
 | Adjust | Auto, Exposure, Brilliance, Highlights, Shadows, Contrast, Brightness, Black Point, Saturation, Vibrance, Warmth, Tint, Sharpness, Definition, Noise Reduction, Vignette |
 | Filters | Vivid, Vivid Warm, Vivid Cool, Dramatic, Dramatic Warm, Dramatic Cool, Mono, Silvertone, Noir, each with how much |
-| ··· | Copy Edits, Paste Edits, Revert to Original |
+| Crop | the box's corners and edges, the picture dragged and pinched under it; Straighten, Vertical, Horizontal; Flip, Rotate; Aspect Ratio (Original, Freeform, Square, Wallpaper, 16:9 to 3:2, upright or level, locked); Reset |
+| ··· | Copy Edits, Paste Edits, Lock Aspect Ratio, Revert to Original |
 
-Crop and Rotate, and video (trimming, and every tool on a clip), come next.
+Video (trimming, and every tool on a clip) comes next.
 
 ## Quick start
 

@@ -43,7 +43,7 @@ public struct HangarResult: Sendable {
     }
 }
 
-/// One of the editor's modes: Adjust and Filters (Crop and Video to come).
+/// One of the editor's modes: Adjust, Filters and Crop (Video to come).
 public struct HangarMode: Hashable, Sendable {
     public let id: String
 
@@ -53,10 +53,12 @@ public struct HangarMode: Hashable, Sendable {
 
     public static let adjust = HangarMode("adjust")
     public static let filters = HangarMode("filters")
+    public static let crop = HangarMode("crop")
 }
 
-/// Photos' editor for a picture: Adjust (Auto and fifteen adjustments, each on its ruler) and Filters (nine looks,
-/// each as much as its ruler says), undo and redo a step at a time, the original under a finger held on the picture.
+/// Photos' editor for a picture: Adjust (Auto and fifteen adjustments, each on its ruler), Filters (nine looks, each as
+/// much as its ruler says) and Crop (the crop's box, Straighten, Vertical and Horizontal, Flip, Rotate, Aspect Ratio),
+/// undo and redo a step at a time, the original under a finger held on the picture.
 /// It flies out of the picture it was opened from and back into it (Flight). Its tools are the toolbox's
 /// (`HangarToolbox`) and its look the style's (`HangarStyle`).
 ///
@@ -74,10 +76,10 @@ public final class HangarEditor: UIViewController {
 
     private let original: UIImage
     private let toolbox: HangarToolbox
-    private let style: HangarStyle
-    private let renderer: HangarRenderer
+    let style: HangarStyle
+    let renderer: HangarRenderer
     private let initialEdit: HangarEdit
-    private var edit: HangarEdit
+    var edit: HangarEdit
     private var history: [HangarEdit]
     private var historyIndex = 0
     /// The mode it's in, Adjust when it opens unless set before.
@@ -89,9 +91,13 @@ public final class HangarEditor: UIViewController {
     private var tool: String
     private var rulerTool: String
 
-    private var preview: CIImage?
-    private var previewContext: HangarRenderContext?
-    private var previewSize = CGSize(width: 1, height: 1)
+    var preview: CIImage?
+    var previewContext: HangarRenderContext?
+    /// The preview shaped by the edit's geometry (cropped, turned, flipped), and its size: what the canvas shows.
+    var shaped: CIImage?
+    var shapedContext: HangarRenderContext?
+    private var shapedGeometry: HangarGeometry?
+    var previewSize = CGSize(width: 1, height: 1)
     /// The preview at the canvas's size in pixels, kept on the GPU: what the canvas draws each change from, so a frame
     /// is the tools' work on the pixels shown and no more (as Photos draws for its view's size).
     private var shown: (image: CIImage, context: HangarRenderContext)?
@@ -99,37 +105,63 @@ public final class HangarEditor: UIViewController {
     private var filterThumbnailsFor: HangarEdit?
 
     private let backdrop = UIView()
-    private let canvas = CanvasView()
-    private let closeButton: UIButton
-    private let historyBar: UIVisualEffectView
+    let canvas = CanvasView()
+    let closeButton: UIButton
+    let historyBar: UIVisualEffectView
     /// On an iPad, Photos' toggle between the original and the edit, first on the history capsule.
     private let originalButton: UIButton
     private let undoButton: UIButton
     private let redoButton: UIButton
-    private let moreButton: UIButton
-    private var doneButton: UIButton
-    private let titleLabel = UILabel()
-    private let nameLabel = UILabel()
-    private let tools = Strip()
+    let moreButton: UIButton
+    var doneButton: UIButton
+    let titleLabel = UILabel()
+    let nameLabel = UILabel()
+    let tools = Strip()
     private var toolButtons: [ToolButton] = []
-    private let ruler: Ruler
-    private let filters = Strip()
+    let ruler: Ruler
+    let filters = Strip()
     private var thumbnails: [FilterThumbnail] = []
     private let loupe: FilterLoupe
-    private let filterRuler: Ruler
+    let filterRuler: Ruler
     /// How much of each filter, as it was last set: a filter comes back as it was left (Photos'), whole the first time.
     private var filterAmounts: [String: Double] = [:]
-    private let modeBar: ModeBar
+    let modeBar: ModeBar
     /// The bars hidden while a filter's ruler is moved (Photos', to see the picture whole).
     private var barsHidden = false
 
     private var source: HangarSource?
     private var flight: FlightGroup?
     private var flyer: UIImageView?
-    private var entered = false
+    var entered = false
     private var leaving = false
-    private var comparing = false
-    private var sideways = false
+    var comparing = false
+    var sideways = false
+
+    // Crop's (`HangarEditor+Crop.swift`).
+    let stage: CropStage
+    let geometryTools = Strip()
+    var geometryButtons: [ToolButton] = []
+    let geometryRuler: Ruler
+    let aspectPicker: AspectPicker
+    /// Flip and Rotate, where undo and redo are in the other modes.
+    let geometryBar: UIVisualEffectView
+    let flipButton: UIButton
+    let rotateButton: UIButton
+    /// Aspect Ratio and More on one capsule.
+    let cropBar: UIVisualEffectView
+    var aspectButton: UIButton
+    let cropMoreButton: UIButton
+    let resetButton = UIButton(type: .custom)
+    let badge = BadgeLabel()
+    let lockedToast = BadgeLabel()
+    var geometryTool = HangarGeometry.straightenID
+    var aspectOpen = false
+    /// The tone-edited picture the stage shows, and the edit it was made for.
+    var stagePictureFor: HangarEdit?
+    var badgeTimer: Timer?
+    var toastTimer: Timer?
+    /// Where the canvas is in Crop's layout and the others' (the stage flies between them).
+    var cropRegion = CGRect.zero
 
     public init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system) {
         original = image
@@ -154,7 +186,17 @@ public final class HangarEditor: UIViewController {
         modeBar = ModeBar(modes: [
             .init(id: HangarMode.adjust.id, name: "Adjust", symbol: "dial.low", chosenSymbol: "dial.low.fill"),
             .init(id: HangarMode.filters.id, name: "Filters", symbol: "camera.filters", chosenSymbol: "camera.filters"),
+            .init(id: HangarMode.crop.id, name: "Crop", symbol: "crop.rotate", chosenSymbol: "crop.rotate", spoken: "Crop and Rotate"),
         ], chosen: HangarMode.adjust.id, style: style)
+        stage = CropStage(style: style)
+        geometryRuler = Ruler(style: style)
+        aspectPicker = AspectPicker(style: style)
+        geometryBar = Chrome.capsule(style)
+        flipButton = Chrome.plainButton("arrow.left.and.right.righttriangle.left.righttriangle.right", label: "Flip", style: style)
+        rotateButton = Chrome.plainButton("rotate.left", label: "Rotate", style: style)
+        cropBar = Chrome.capsule(style)
+        aspectButton = Chrome.plainButton("aspectratio", label: "Aspect Ratio", style: style)
+        cropMoreButton = Chrome.plainButton("ellipsis", label: "More", style: style)
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .overFullScreen
         modalPresentationCapturesStatusBarAppearance = true
@@ -182,6 +224,7 @@ public final class HangarEditor: UIViewController {
         backdrop.backgroundColor = style.background
         view.addSubview(backdrop)
         view.addSubview(canvas)
+        view.addSubview(stage)
 
         closeButton.addAction(UIAction { [weak self] _ in self?.closeTapped() }, for: .touchUpInside)
         undoButton.addAction(UIAction { [weak self] _ in self?.step(-1) }, for: .touchUpInside)
@@ -203,6 +246,7 @@ public final class HangarEditor: UIViewController {
         for chrome in [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, tools, ruler, filters, filterRuler, modeBar] as [UIView] {
             view.addSubview(chrome)
         }
+        setUpCrop()
 
         toolButtons = toolbox.adjustments.map { ToolButton($0, style: style) }
         tools.setItems(toolButtons, chosen: 0)
@@ -260,8 +304,9 @@ public final class HangarEditor: UIViewController {
         for chrome in chromeViews { Chrome.show(chrome, false) }
     }
 
-    private var chromeViews: [UIView] {
+    var chromeViews: [UIView] {
         [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, tools, ruler, filters, filterRuler, modeBar]
+            + cropChrome
     }
 
     /// The picture at about the screen's size, kept on the GPU: what every change is drawn from.
@@ -280,8 +325,22 @@ public final class HangarEditor: UIViewController {
         guard let picture = drawn.cgImage else { return }
         let source = CIImage(cgImage: picture).insertingIntermediate(cache: true)
         preview = source
-        previewSize = size
         previewContext = HangarRenderContext(source: source, scale: Double(fit))
+        shapePreview()
+    }
+
+    /// The preview shaped by the edit's geometry, again if it's changed: the canvas laid out for its size.
+    func shapePreview() {
+        guard let preview, let previewContext else { return }
+        let g = edit.appliedGeometry
+        guard g != shapedGeometry else { return }
+        shapedGeometry = g
+        let out = renderer.shape(edit, preview).insertingIntermediate(cache: true)
+        shaped = out
+        shapedContext = previewContext.resized(to: out, scale: previewContext.scale)
+        previewSize = out.extent.size
+        shownSize = .zero
+        view.setNeedsLayout()
     }
 
     // MARK: Layout
@@ -308,7 +367,7 @@ public final class HangarEditor: UIViewController {
         doneButton.frame = CGRect(x: bounds.maxX - safe.right - side - button, y: top, width: button, height: button)
         moreButton.frame = CGRect(x: doneButton.frame.minX - 12 - button, y: top, width: button, height: button)
         titleLabel.frame = CGRect(x: bounds.midX - 150, y: top, width: 300, height: button)
-        titleLabel.isHidden = !sideways
+        titleLabel.isHidden = !sideways || mode == .crop
         let below = closeButton.frame.maxY + 12
 
         let region: CGRect
@@ -339,6 +398,7 @@ public final class HangarEditor: UIViewController {
                                      width: width, height: ceil(font.lineHeight))
             region = CGRect(x: modeBar.frame.maxX + 24, y: below, width: tools.frame.minX - 36 - 120 - modeBar.frame.maxX - 24,
                             height: bounds.maxY - max(safe.bottom, 16) - 12 - below)
+            layoutCrop(sideways: true, safe: safe)
         } else {
             // Photos' phone layout, up from the mode bar 16 points off the bottom: the ruler 71 above the bar's top,
             // the tools 113 (the filters 125, taller, their middles level with the tools'), the name's middle 152 (160).
@@ -362,8 +422,10 @@ public final class HangarEditor: UIViewController {
             nameLabel.textAlignment = .center
             placeName(capMiddle: base - (mode == .filters ? 159.7 : 151.7), width: bounds.width)
             region = CGRect(x: safe.left, y: below, width: width, height: base - 151.7 - 24 - below)
+            layoutCrop(sideways: false, safe: safe)
         }
         for thumbnail in thumbnails { thumbnail.axis = sideways ? .along : .across }
+        stage.frame = bounds
         if !leaving {
             canvas.frame = Self.fit(previewSize, in: region, scale: view.window?.screen.scale ?? 2)
             fitShown()
@@ -388,7 +450,7 @@ public final class HangarEditor: UIViewController {
     }
 
     private func fitShown() {
-        guard let preview, let previewContext, canvas.bounds.width > 0, canvas.bounds.height > 0 else { return }
+        guard let preview = shaped, let previewContext = shapedContext, canvas.bounds.width > 0, canvas.bounds.height > 0 else { return }
         let scale = view.window?.screen.scale ?? traitCollection.displayScale
         let pixels = CGSize(width: (canvas.bounds.width * scale).rounded(), height: (canvas.bounds.height * scale).rounded())
         guard pixels != shownSize else { return }
@@ -512,10 +574,13 @@ public final class HangarEditor: UIViewController {
         flyer.contentMode = .scaleAspectFill
         flyer.clipsToBounds = true
         flyer.layer.cornerCurve = .continuous
-        flyer.frame = canvas.frame
-        view.insertSubview(flyer, aboveSubview: canvas)
+        // From the box in Crop (the picture round it gone at once).
+        let from = mode == .crop ? stage.box : canvas.frame
+        flyer.frame = from
+        view.insertSubview(flyer, aboveSubview: stage)
         canvas.alpha = 0
-        let start = FlightPlace(frame: canvas.frame)
+        stage.alpha = 0
+        let start = FlightPlace(frame: from)
         let end = place(of: source) ?? start
         let piece = FlightPiece(view: flyer, from: start, target: { [weak self] in self.flatMap { $0.place(of: source) } }) { [weak self] place in
             // The page shows through only as the picture is about to land on it.
@@ -546,17 +611,18 @@ public final class HangarEditor: UIViewController {
     // MARK: Drawing
 
     /// The canvas shows the edit (the original while a finger's held on it), made off the main thread.
-    private func render() {
+    func render() {
         guard let shown else { return }
         let (renderer, edit, comparing) = (renderer, edit, comparing)
         canvas.show { comparing ? shown.image : renderer.apply(edit, to: shown.image, context: shown.context) }
     }
 
     /// The preview with an edit, as a picture: what flies, and what's given back at once.
-    private func renderedPreview(_ edit: HangarEdit) -> UIImage {
+    func renderedPreview(_ edit: HangarEdit) -> UIImage {
         guard let preview, let previewContext else { return original }
-        let out = renderer.apply(edit, to: preview, context: previewContext)
-        guard let picture = HangarRenderer.context.createCGImage(out, from: preview.extent, format: .RGBA8,
+        let shapedPreview = renderer.shape(edit, preview)
+        let out = renderer.apply(edit, to: shapedPreview, context: previewContext.resized(to: shapedPreview, scale: previewContext.scale))
+        guard let picture = HangarRenderer.context.createCGImage(out, from: shapedPreview.extent, format: .RGBA8,
                                                                  colorSpace: CGColorSpace(name: CGColorSpace.displayP3)) else { return original }
         return UIImage(cgImage: picture)
     }
@@ -586,27 +652,32 @@ public final class HangarEditor: UIViewController {
     private func setMode(_ new: HangarMode) {
         ruler.stop()
         filterRuler.stop()
+        geometryRuler.stop()
         modeBar.choose(new.id)
-        let adjusting = new == .adjust
+        let adjusting = new == .adjust, filtering = new == .filters, cropping = new == .crop
+        let wasCropping = !stage.isHidden && stage.alpha > 0
         UIView.transition(with: view, duration: entered ? 0.2 : 0, options: [.transitionCrossDissolve, .allowUserInteraction]) {
             self.tools.isHidden = !adjusting
             self.ruler.isHidden = !adjusting
-            self.filters.isHidden = adjusting
-            self.filterRuler.isHidden = adjusting
+            self.filters.isHidden = !filtering
+            self.filterRuler.isHidden = !filtering
             self.filterRuler.alpha = self.edit.filter == nil ? 0 : 1
+            self.nameLabel.isHidden = cropping
+            self.showCropChrome(cropping)
         }
-        titleLabel.text = (adjusting ? "Adjust" : "Filters").uppercased()
+        titleLabel.text = (adjusting ? "Adjust" : filtering ? "Filters" : "Crop").uppercased()
         if adjusting {
             if let i = toolbox.adjustments.firstIndex(where: { $0.id == tool }) { showName(toolbox.adjustments[i].name) }
-        } else {
+        } else if filtering {
             showName(thumbnails[filters.chosen].name)
             makeThumbnails()
         }
+        if cropping { enterCrop() } else if wasCropping { leaveCrop() }
         // The name sits a little higher over the filters.
         view.setNeedsLayout()
     }
 
-    private func showName(_ name: String) {
+    func showName(_ name: String) {
         nameLabel.attributedText = NSAttributedString(string: name.uppercased(), attributes: [.font: style.nameFont,
                                                                                               .foregroundColor: style.secondary])
     }
@@ -767,7 +838,7 @@ public final class HangarEditor: UIViewController {
 
     /// Each filter on the picture as it's adjusted, small: made when Filters opens, again if the adjustments changed.
     private func makeThumbnails() {
-        guard let preview, let previewContext else { return }
+        guard let preview = shaped, let previewContext = shapedContext else { return }
         var adjusted = edit
         adjusted.filter = nil
         guard filterThumbnailsFor != adjusted else { return }
@@ -805,7 +876,7 @@ public final class HangarEditor: UIViewController {
 
     // MARK: History
 
-    private func commit() {
+    func commit() {
         guard history[historyIndex] != edit else { return sync() }
         history.removeSubrange((historyIndex + 1)...)
         history.append(edit)
@@ -820,12 +891,13 @@ public final class HangarEditor: UIViewController {
         guard history.indices.contains(to) else { return }
         historyIndex = to
         edit = history[to]
+        shapePreview()
         render()
         sync()
     }
 
     /// Every control as the edit is.
-    private func sync() {
+    func sync() {
         for button in toolButtons {
             button.show(value: edit.value(of: button.id), switchedOff: edit.switchedOff.contains(button.id),
                         number: button.showsNumber)
@@ -847,6 +919,7 @@ public final class HangarEditor: UIViewController {
         }
         undoButton.isEnabled = historyIndex > 0
         redoButton.isEnabled = historyIndex < history.count - 1
+        syncCrop()
         let changed = edit != initialEdit
         if changed != (doneButton.configuration?.baseBackgroundColor == style.accent) {
             let replacement = Chrome.button("checkmark", label: "Done", style: style, prominent: changed)
@@ -886,8 +959,9 @@ public final class HangarEditor: UIViewController {
 
     private static let pasteboardType = "dev.hangar.edit"
 
-    private func moreActions() -> [UIMenuElement] {
+    func moreActions() -> [UIMenuElement] {
         var actions: [UIMenuElement] = []
+        if mode == .crop { actions.append(lockAction()) }
         actions.append(UIAction(title: "Copy Edits", image: UIImage(systemName: "doc.on.doc"),
                                 attributes: edit.isOriginal ? .disabled : []) { [weak self] _ in
             guard let self, let data = try? JSONEncoder().encode(self.edit) else { return }
@@ -900,8 +974,10 @@ public final class HangarEditor: UIViewController {
             self.ruler.stop()
             self.filterRuler.stop()
             self.edit = pasted
+            self.shapePreview()
             self.render()
             self.commit()
+            self.reloadStage()
         })
         actions.append(UIMenu(options: .displayInline, children: [
             UIAction(title: "Revert to Original", image: UIImage(systemName: "arrow.uturn.backward.circle"),
@@ -910,8 +986,10 @@ public final class HangarEditor: UIViewController {
                 self.ruler.stop()
                 self.filterRuler.stop()
                 self.edit = HangarEdit()
+                self.shapePreview()
                 self.render()
                 self.commit()
+                self.reloadStage()
             },
         ]))
         return actions
