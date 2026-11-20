@@ -84,11 +84,18 @@ public final class HangarEditor: UIViewController {
     public var mode = HangarMode.adjust {
         didSet { if isViewLoaded, mode != oldValue { setMode(mode) } }
     }
+    /// The tool in the middle of the strip, and the one the ruler is set to: the same but while the strip moves,
+    /// when the ruler is off (as Photos' is), so a ruler still sliding never changes the tool coming to the middle.
     private var tool: String
+    private var rulerTool: String
 
     private var preview: CIImage?
     private var previewContext: HangarRenderContext?
     private var previewSize = CGSize(width: 1, height: 1)
+    /// The preview at the canvas's size in pixels, kept on the GPU: what the canvas draws each change from, so a frame
+    /// is the tools' work on the pixels shown and no more (as Photos draws for its view's size).
+    private var shown: (image: CIImage, context: HangarRenderContext)?
+    private var shownSize = CGSize.zero
     private var filterThumbnailsFor: HangarEdit?
 
     private let backdrop = UIView()
@@ -126,6 +133,7 @@ public final class HangarEditor: UIViewController {
         self.edit = edit
         history = [edit]
         tool = toolbox.adjustments.first?.id ?? ""
+        rulerTool = tool
         closeButton = Chrome.button("xmark", label: "Cancel", style: style)
         historyBar = Chrome.capsule(style)
         undoButton = Chrome.plainButton("arrow.uturn.backward", label: "Undo", style: style)
@@ -184,7 +192,9 @@ public final class HangarEditor: UIViewController {
 
         toolButtons = toolbox.adjustments.map { ToolButton($0, style: style) }
         tools.setItems(toolButtons, chosen: 0)
-        tools.onChoose = { [weak self] i in self?.chooseTool(i) }
+        tools.onChoose = { [weak self] i in self?.passTool(i) }
+        tools.onMove = { [weak self] dragged in self?.ruler.setEnabled(false, dimmed: dragged, animated: true) }
+        tools.onRest = { [weak self] i in self?.chooseTool(i) }
         tools.onTapChosen = { [weak self] i in self?.toggleTool(i) }
         ruler.onBegin = { [weak self] in self?.rulerBegan() }
         ruler.onChange = { [weak self] value in self?.rulerMoved(value) }
@@ -194,6 +204,8 @@ public final class HangarEditor: UIViewController {
         thumbnails = [none] + toolbox.filters.map { FilterThumbnail(id: $0.id, name: $0.name, style: style) }
         filters.setItems(thumbnails, chosen: thumbnails.firstIndex { $0.id == edit.filter } ?? 0)
         filters.onChoose = { [weak self] i in self?.chooseFilter(i) }
+        filters.onMove = { [weak self] dragged in self?.filterRuler.setEnabled(false, dimmed: dragged, animated: true) }
+        filters.onRest = { [weak self] _ in self?.filtersRested() }
         filterRuler.range = 0...1
         filterRuler.onChange = { [weak self] value in self?.filterAmountMoved(value) }
         filterRuler.onEnd = { [weak self] _ in self?.commit() }
@@ -304,7 +316,30 @@ public final class HangarEditor: UIViewController {
             region = CGRect(x: safe.left, y: below, width: bounds.width - safe.left - safe.right, height: nameLabel.frame.minY - 16 - below)
         }
         for thumbnail in thumbnails { thumbnail.axis = sideways ? .along : .across }
-        if !leaving { canvas.frame = Self.fit(previewSize, in: region, scale: view.window?.screen.scale ?? 2) }
+        if !leaving {
+            canvas.frame = Self.fit(previewSize, in: region, scale: view.window?.screen.scale ?? 2)
+            fitShown()
+        }
+    }
+
+    private func fitShown() {
+        guard let preview, let previewContext, canvas.bounds.width > 0, canvas.bounds.height > 0 else { return }
+        let scale = view.window?.screen.scale ?? traitCollection.displayScale
+        let pixels = CGSize(width: (canvas.bounds.width * scale).rounded(), height: (canvas.bounds.height * scale).rounded())
+        guard pixels != shownSize else { return }
+        shownSize = pixels
+        let down = pixels.height / previewSize.height
+        if pixels.width >= previewSize.width || pixels.height >= previewSize.height {
+            shown = (preview, previewContext)
+        } else {
+            let fitted = preview.clampedToExtent()
+                .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: down,
+                                                                        kCIInputAspectRatioKey: (pixels.width / previewSize.width) / down])
+                .cropped(to: CGRect(origin: .zero, size: pixels))
+                .insertingIntermediate(cache: true)
+            shown = (fitted, previewContext.resized(to: fitted, scale: previewContext.scale * Double(down)))
+        }
+        render()
     }
 
     /// `size` as large as fits in `region`, in its middle, on whole pixels: where a viewer that fits a picture to the
@@ -367,8 +402,30 @@ public final class HangarEditor: UIViewController {
             self?.flyer?.removeFromSuperview()
             self?.flyer = nil
         }
-        canvas.setNeedsDisplay()
+        render()
+        #if DEBUG
+        scrubIfAsked()
+        #endif
     }
+
+    #if DEBUG
+    private func scrubIfAsked() {
+        guard let id = Scrub.asked, let index = toolbox.adjustments.firstIndex(where: { $0.id == id }) else { return }
+        if Scrub.all {
+            for adjustment in toolbox.adjustments where adjustment.id != id {
+                edit.set(adjustment.id, to: adjustment.range.upperBound / 3)
+            }
+            render()
+            sync()
+        }
+        tools.choose(index, animated: false)
+        chooseTool(index)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            Scrub(ruler: self.ruler, canvas: self.canvas, name: id + (Scrub.all ? "-all" : "")).run()
+        }
+    }
+    #endif
 
     private func leave(showing picture: UIImage) {
         leaving = true
@@ -422,9 +479,11 @@ public final class HangarEditor: UIViewController {
 
     // MARK: Drawing
 
+    /// The canvas shows the edit (the original while a finger's held on it), made off the main thread.
     private func render() {
-        guard let preview, let previewContext else { return }
-        canvas.image = comparing ? preview : renderer.apply(edit, to: preview, context: previewContext)
+        guard let shown else { return }
+        let (renderer, edit, comparing) = (renderer, edit, comparing)
+        canvas.show { comparing ? shown.image : renderer.apply(edit, to: shown.image, context: shown.context) }
     }
 
     /// The preview with an edit, as a picture: what flies, and what's given back at once.
@@ -448,6 +507,8 @@ public final class HangarEditor: UIViewController {
     // MARK: Modes
 
     private func setMode(_ new: HangarMode) {
+        ruler.stop()
+        filterRuler.stop()
         modeBar.choose(new.id)
         let adjusting = new == .adjust
         UIView.transition(with: view, duration: entered ? 0.2 : 0, options: [.transitionCrossDissolve, .allowUserInteraction]) {
@@ -472,17 +533,28 @@ public final class HangarEditor: UIViewController {
 
     // MARK: Adjust
 
+    /// A tool passing the middle of the strip as it moves: its name shown, the ruler (off meanwhile) left alone.
+    private func passTool(_ index: Int) {
+        guard toolbox.adjustments.indices.contains(index) else { return }
+        tool = toolbox.adjustments[index].id
+        showName(toolbox.adjustments[index].name)
+    }
+
+    /// The strip came to rest on a tool: the ruler set to it and on again.
     private func chooseTool(_ index: Int) {
         guard toolbox.adjustments.indices.contains(index) else { return }
         let adjustment = toolbox.adjustments[index]
         tool = adjustment.id
+        rulerTool = adjustment.id
         ruler.range = adjustment.range
-        ruler.set(edit.value(of: tool))
+        ruler.set(edit.value(of: rulerTool))
         showName(adjustment.name)
+        ruler.setEnabled(true, animated: true)
     }
 
     /// The chosen tool tapped: Auto on or off; any other with a value, switched off or on (its value kept).
     private func toggleTool(_ index: Int) {
+        ruler.stop()
         let adjustment = toolbox.adjustments[index]
         if edit.value(of: adjustment.id) == 0 {
             guard adjustment.id == HangarAdjustment.auto.id else { return }
@@ -499,32 +571,37 @@ public final class HangarEditor: UIViewController {
     }
 
     private func rulerBegan() {
-        toolButtons.first { $0.id == tool }?.show(value: edit.value(of: tool), switchedOff: false, number: true)
+        toolButtons.first { $0.id == rulerTool }?.show(value: edit.value(of: rulerTool), switchedOff: false, number: true)
     }
 
     private func rulerMoved(_ value: Double) {
-        edit.set(tool, to: value)
+        edit.set(rulerTool, to: value)
         // Moving a tool switched off switches it on.
-        edit.switchedOff.remove(tool)
-        toolButtons.first { $0.id == tool }?.show(value: value, switchedOff: false, number: true)
+        edit.switchedOff.remove(rulerTool)
+        toolButtons.first { $0.id == rulerTool }?.show(value: value, switchedOff: false, number: true)
         render()
     }
 
     private func rulerEnded() {
         commit()
-        toolButtons.first { $0.id == tool }?.show(value: edit.value(of: tool), switchedOff: false, number: false)
+        toolButtons.first { $0.id == rulerTool }?.show(value: edit.value(of: rulerTool), switchedOff: false, number: false)
     }
 
     // MARK: Filters
 
+    /// A filter passing the middle of the strip, or tapped: on the picture at once, kept when the strip rests.
     private func chooseFilter(_ index: Int) {
         let id = thumbnails[index].id
         edit.filter = id
         if id != nil, edit.filterAmount == 0 { edit.filterAmount = 1 }
-        filterRuler.set(edit.filterAmount)
         UIView.animate(withDuration: 0.2) { self.filterRuler.isHidden = id == nil }
         showName(thumbnails[index].name)
         render()
+    }
+
+    private func filtersRested() {
+        filterRuler.set(edit.filterAmount)
+        filterRuler.setEnabled(true, animated: true)
         commit()
     }
 
@@ -582,6 +659,8 @@ public final class HangarEditor: UIViewController {
     }
 
     private func step(_ by: Int) {
+        ruler.stop()
+        filterRuler.stop()
         let to = historyIndex + by
         guard history.indices.contains(to) else { return }
         historyIndex = to
@@ -595,7 +674,7 @@ public final class HangarEditor: UIViewController {
         for button in toolButtons {
             button.show(value: edit.value(of: button.id), switchedOff: edit.switchedOff.contains(button.id), number: false)
         }
-        ruler.set(edit.value(of: tool))
+        ruler.set(edit.value(of: rulerTool))
         let chosen = thumbnails.firstIndex { $0.id == edit.filter } ?? 0
         if chosen != filters.chosen {
             filters.choose(chosen, animated: true)
@@ -658,6 +737,8 @@ public final class HangarEditor: UIViewController {
         actions.append(UIAction(title: "Paste Edits", image: UIImage(systemName: "doc.on.clipboard"),
                                 attributes: pasted == nil ? .disabled : []) { [weak self] _ in
             guard let self, let pasted else { return }
+            self.ruler.stop()
+            self.filterRuler.stop()
             self.edit = pasted
             self.render()
             self.commit()
@@ -666,6 +747,8 @@ public final class HangarEditor: UIViewController {
             UIAction(title: "Revert to Original", image: UIImage(systemName: "arrow.uturn.backward.circle"),
                      attributes: edit.isOriginal ? .disabled : .destructive) { [weak self] _ in
                 guard let self else { return }
+                self.ruler.stop()
+                self.filterRuler.stop()
                 self.edit = HangarEdit()
                 self.render()
                 self.commit()

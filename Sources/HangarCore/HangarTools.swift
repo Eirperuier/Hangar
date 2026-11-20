@@ -74,28 +74,54 @@ public final class HangarRenderContext: @unchecked Sendable {
     /// This drawing's pixels a pixel of the full picture: 1 full size, less for a preview.
     public let scale: Double
 
-    private let lock = NSLock()
-    private var autoFilters: [CIFilter]?
+    private let reading: Reading
 
     public init(source: CIImage, scale: Double = 1) {
         self.source = source
         self.scale = scale
+        reading = Reading(source)
+    }
+
+    private init(source: CIImage, scale: Double, reading: Reading) {
+        self.source = source
+        self.scale = scale
+        self.reading = reading
+    }
+
+    /// The same picture drawn at another size (`source` a copy of this one's, `scale` its own): Auto's reading of the
+    /// picture is this one's, worked out once for both, so it does the same at either size.
+    public func resized(to source: CIImage, scale: Double) -> HangarRenderContext {
+        HangarRenderContext(source: source, scale: scale, reading: reading)
     }
 
     /// Core Image's enhancement of the source (`autoAdjustmentFilters`), worked out once: what Auto applies.
     public func autoEnhanced(_ image: CIImage) -> CIImage {
-        lock.lock()
-        if autoFilters == nil {
-            autoFilters = source.autoAdjustmentFilters(options: [.redEye: false])
-        }
-        let filters = autoFilters ?? []
-        lock.unlock()
         var out = image
-        for filter in filters {
+        for filter in reading.filters() {
             guard let copy = filter.copy() as? CIFilter else { continue }
             copy.setValue(out, forKey: kCIInputImageKey)
             out = copy.outputImage ?? out
         }
         return out
+    }
+}
+
+/// Core Image's reading of a picture for Auto, done the first time it's asked for.
+private final class Reading: @unchecked Sendable {
+    private let source: CIImage
+    private let lock = NSLock()
+    private var read: [CIFilter]?
+
+    init(_ source: CIImage) {
+        self.source = source
+    }
+
+    func filters() -> [CIFilter] {
+        lock.lock()
+        defer { lock.unlock() }
+        if read == nil {
+            read = source.autoAdjustmentFilters(options: [.redEye: false])
+        }
+        return read ?? []
     }
 }

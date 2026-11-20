@@ -7,7 +7,7 @@ Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture f
 ## What it feels like
 
 - **It's Photos'.** The same bars, the same modes, the same tools in the same order, the same ruler: marks sliding under a line, 0 in yellow, a tap you feel as you cross it. On an iPhone the tools run along the bottom; on an iPad (or a phone on its side) the modes go down the left and the tools down the right.
-- **It follows your finger.** The picture is drawn by Core Image straight into the screen, from a copy kept on the GPU, every frame a ruler moves.
+- **It follows your finger.** The picture is drawn by Core Image straight into the screen, from a copy the screen's size kept on the GPU, every frame a ruler moves; off the main thread and always the latest, so the ruler never waits for it. A ruler only ever changes the tool it was set to: while the tools move it's off.
 - **Nothing is lost.** An edit is values, never pixels (`HangarEdit`, Codable): keep it beside the original, open it again later, change Exposure without redoing the rest, or go back to the original. Undo and redo go a step at a time; a finger held on the picture shows the original.
 - **It comes from where you tapped.** Give it the picture's place on screen (`HangarSource`) and it flies out of it and back into it, the page underneath covered and shown again as it goes.
 
@@ -93,7 +93,7 @@ Swift Package Manager:
 .package(url: "https://github.com/Eirperuier/Hangar.git", branch: "main")
 ```
 
-and add the `Hangar` product (or `HangarCore` alone). Requires iOS 17 or Mac Catalyst 17.
+and add the `Hangar` product (or `HangarCore` alone). Requires iOS 17 or Mac Catalyst 17. On an iPhone with ProMotion, set `CADisableMinimumFrameDurationOnPhone` in your app's Info.plist so the picture follows a ruler at 120 Hz rather than 60.
 
 ## Example
 

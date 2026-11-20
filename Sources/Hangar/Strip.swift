@@ -8,7 +8,9 @@ protocol StripItem: UIView {
 }
 
 /// A row of things, one in the middle chosen, as Photos' tools and filters are: dragged and flicked, it comes to rest
-/// on one; passing one chooses it (felt); a tap on one brings it to the middle. Across (a phone) or along (an iPad).
+/// on one; passing one chooses it (felt); a tap on one brings it to the middle. It says when it starts moving and where
+/// it comes to rest, as Photos' does to dim its ruler meanwhile and set it for the tool it rests on. Across (a phone)
+/// or along (an iPad).
 @MainActor
 final class Strip: UIView, UIScrollViewDelegate {
     var axis: Ruler.Axis = .across { didSet { setNeedsLayout() } }
@@ -18,12 +20,17 @@ final class Strip: UIView, UIScrollViewDelegate {
     private(set) var items: [any StripItem] = []
     private(set) var chosen = 0
 
-    /// One came to the middle, by a finger or a tap.
+    /// One came to the middle, by a finger or a tap: as it passes, not only where it rests.
     var onChoose: ((Int) -> Void)?
     /// The one in the middle was tapped.
     var onTapChosen: ((Int) -> Void)?
+    /// A finger took it (dragged) or a tap set it moving; it came to rest, on the one in the middle.
+    var onMove: ((_ dragged: Bool) -> Void)?
+    var onRest: ((Int) -> Void)?
+    /// Whether it's moving, for a finger or a tap.
+    private(set) var isMoving = false
 
-    private let scroll = UIScrollView()
+    private let scroll = LiftScrollView()
     private let haptics = Haptics()
     private let fade = CAGradientLayer()
     private var setting = false
@@ -38,6 +45,7 @@ final class Strip: UIView, UIScrollViewDelegate {
         scroll.clipsToBounds = false
         addSubview(scroll)
         scroll.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        scroll.onLift = { [weak self] in self?.settle() }
         // Its ends fade out: what's beyond them isn't shown.
         fade.colors = [UIColor.clear.cgColor, UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor]
         layer.mask = fade
@@ -111,8 +119,38 @@ final class Strip: UIView, UIScrollViewDelegate {
         items[index].setChosen(true)
     }
 
+    private func move(dragged: Bool) {
+        guard !isMoving || dragged else { return }
+        isMoving = true
+        onMove?(dragged)
+    }
+
+    /// A finger lifted without flicking it: if that stopped a flick between two, onto the nearer.
+    private func settle() {
+        guard isMoving, !setting, !scroll.isTracking, !scroll.isDecelerating else { return }
+        let target = offset(for: index(at: scroll.contentOffset))
+        guard scroll.contentOffset != target else { return rest() }
+        setting = true
+        scroll.setContentOffset(target, animated: true)
+    }
+
+    private func rest() {
+        guard isMoving, !scroll.isTracking, !scroll.isDecelerating else { return }
+        isMoving = false
+        onRest?(chosen)
+    }
+
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         setting = false
+        move(dragged: true)
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { rest() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        rest()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -130,18 +168,48 @@ final class Strip: UIView, UIScrollViewDelegate {
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         setting = false
+        rest()
     }
 
     @objc private func tapped(_ tap: UITapGestureRecognizer) {
         let at = tap.location(in: scroll)
         guard let i = items.firstIndex(where: { $0.frame.insetBy(dx: -8, dy: -8).contains(at) }) else { return }
         if i == chosen {
+            guard !isMoving else { return }
             onTapChosen?(i)
         } else {
+            move(dragged: false)
+            let there = scroll.contentOffset == offset(for: i)
             choose(i, animated: true)
             haptics.step()
             onChoose?(i)
+            if there {
+                setting = false
+                rest()
+            }
         }
+    }
+}
+
+/// A scroll view that says when a finger lifts from it. A finger that stops a flick and lifts without dragging leaves
+/// it at rest without a word to its delegate (Photos' own hear of it privately): the lift is when to see where it is.
+@MainActor
+final class LiftScrollView: UIScrollView {
+    var onLift: (() -> Void)?
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        lifted()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        lifted()
+    }
+
+    /// After the touch's own gestures (a tap) have done what they do.
+    private func lifted() {
+        DispatchQueue.main.async { [weak self] in self?.onLift?() }
     }
 }
 

@@ -27,11 +27,15 @@ An app's tools are the same kind of thing as Photos': the toolbox is a list it c
 
 ## Drawing
 
-The picture is drawn at about the screen's size into a Metal view the picture's shape (`CanvasView`), by Core Image, each time the edit changes: a ruler dragged redraws it every frame. Its source is drawn once to that size and kept on the GPU (`insertingIntermediate`), so a frame is only the tools' work. The full picture is drawn when it's asked for (`HangarResult.render`), off the main thread, in the picture's own colours.
+The picture is drawn by Core Image into a Metal layer the picture's shape (`CanvasView`) each time the edit changes: a ruler dragged redraws it every frame. It's drawn as Photos' is (its `NUMediaViewRenderer` draws for the view's size and coalesces its renders): the source is the picture scaled once to the canvas's pixels and kept on the GPU (`insertingIntermediate`), so a frame is only the tools' work on the pixels shown; and a picture is made and drawn on a queue of the canvas's own, one at a time, a change that comes meanwhile taking the place of any still waiting. So the main thread never waits for the GPU (the ruler stays with the finger however long a frame takes), and what's drawn next is always the latest. The full picture is drawn when it's asked for (`HangarResult.render`), off the main thread, in the picture's own colours.
+
+On an iPhone, the picture follows at 120 Hz only if the app has `CADisableMinimumFrameDurationOnPhone` in its Info.plist (the example has); an iPad needs nothing. In a debug build, `HANGAR_SCRUB=<tool>` in the app's environment sweeps that tool's ruler for four seconds once the editor is in and writes how the frames went (the screen's, the picture's, the GPU's time on each) to Documents/scrub-<tool>.json; `HANGAR_SCRUB_ALL=1` puts every other tool a third of the way first.
 
 ## Moving things
 
-The ruler and the strips are scroll views: they're dragged and flicked as everything else on iOS, and come to rest on a value or a tool. A strip chooses what passes its middle as it goes (a tap felt for each), and a tap on a tool brings it there; the ruler holds at 0 when it comes to rest within 2% of it, with a tap felt each time it crosses it.
+The ruler and the strips are scroll views: they're dragged and flicked as everything else on iOS, and come to rest on a value or a tool. A strip chooses what passes its middle as it goes (a tap felt for each), and a tap on a tool brings it there. A finger that stops a flick and lifts settles it there (a strip on the nearer one).
+
+The ruler only ever changes the tool it was set to, as in Photos: while a finger moves the tools it's off, stopped where it was and dimmed, and it's set to the tool they come to rest on (a tap on a tool stops it too, undimmed for the moment). Its ends fade in a window that stays still over the sliding marks, the last few marks and not the ruler. It holds at 0 as Photos' does (its snapping: 5 points, slower than 30 points a second): a finger moving slowly within 5 points of 0 is held there until it has gone 5 points past; a flick coming to rest within 2% of it rests on it; a tap is felt each time it gets there.
 
 The picture flies in and out on Flight (`FlightGroup`): from the source's frame to the canvas and back, its target read every frame. Flying in, the page under it is covered within the first third of the way, as the picture leaves its place; flying home, it shows through only as the picture is about to land (the cube of the way), so the picture never sits beside a copy of itself.
 
