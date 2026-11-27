@@ -106,7 +106,7 @@ public final class HangarCropModule: HangarModule {
         stage.onEnd = { [weak self] g in
             guard let self else { return }
             self.stageChanged(g)
-            self.resetButton.isHidden = !self.cropChanged
+            Chrome.fade(self.resetButton, self.cropChanged, animated: true)
             self.h.commit()
         }
         stage.onTouch = { [weak self] in self?.hideBadge() }
@@ -234,7 +234,7 @@ public final class HangarCropModule: HangarModule {
         aspectPicker.isHidden = !cropping || !aspectOpen
         badge.isHidden = !cropping
         lockedToast.isHidden = !cropping
-        resetButton.isHidden = !cropping || !cropChanged
+        Chrome.fade(resetButton, cropping && cropChanged, animated: false)
     }
 
     public func stop() {
@@ -425,7 +425,7 @@ public final class HangarCropModule: HangarModule {
         geometryRuler.set(shownGeometryValue(geometryTool))
         setGeometryRulerState(animated: h.hasEntered)
         if isChosen {
-            resetButton.isHidden = !cropChanged
+            Chrome.fade(resetButton, cropChanged, animated: h.hasEntered)
             aspectButton.accessibilityValue = currentChoice().name
         }
     }

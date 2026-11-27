@@ -23,6 +23,8 @@ final class WordsBar: UIView, UITextFieldDelegate {
     private var working = false
     private var sends = true
     private var needsPaint = false
+    /// What shows (or is on its way), each faded in or out: laid out as it'll be.
+    private var showing = (suggest: false, attach: false, clear: false, price: false, send: true)
 
     init(style: HangarStyle) {
         self.style = style
@@ -57,23 +59,23 @@ final class WordsBar: UIView, UITextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// `sends`: its own Send (a tool without a button over the picture); `needsPaint`: only once something's painted.
-    func configure(_ words: HangarWords, painted: Bool, working: Bool, sends: Bool, needsPaint: Bool, attaches: Bool, price: String?) {
+    func configure(_ words: HangarWords, painted: Bool, working: Bool, sends: Bool, needsPaint: Bool, attaches: Bool, price: String?,
+                   animated: Bool) {
         self.painted = painted
         self.working = working
         self.sends = sends
         self.needsPaint = needsPaint
         field.attributedPlaceholder = NSAttributedString(string: words.placeholder, attributes: [.foregroundColor: style.secondary])
-        suggest.isHidden = words.suggestions.isEmpty
+        showing.suggest = !words.suggestions.isEmpty
         suggest.menu = UIMenu(children: words.suggestions.map { suggestion in
             UIAction(title: suggestion.title, image: suggestion.symbol.flatMap { UIImage(systemName: $0) }) { [weak self] _ in
                 self?.append(suggestion.words)
             }
         })
-        attach.isHidden = !attaches
+        showing.attach = attaches
         self.price.text = price
         field.isEnabled = !working
-        update()
-        setNeedsLayout()
+        update(animated: animated)
     }
 
     var words: String {
@@ -97,12 +99,22 @@ final class WordsBar: UIView, UITextFieldDelegate {
         onChange?()
     }
 
-    private func update() {
-        send.isHidden = !sends
+    /// Each part as the words are: faded in or out, the rest moving to make room (`animated`; by default while it
+    /// shows).
+    private func update(animated: Bool? = nil) {
+        let animated = animated ?? (window != nil && !isHidden)
+        showing.send = sends
+        showing.clear = painted && !working
+        showing.price = price.text != nil && !words.isEmpty && sends
         send.isEnabled = !words.isEmpty && (painted || !needsPaint) && !working
-        clear.isHidden = !painted || working
-        price.isHidden = price.text == nil || words.isEmpty || !sends
+        let parts = [(suggest, showing.suggest), (attach, showing.attach), (send, showing.send), (clear, showing.clear),
+                     (price, showing.price)] as [(UIView, Bool)]
+        arriving = parts.filter { $0.1 && $0.0.isHidden }.map(\.0)
+        for (view, shown) in parts { Chrome.fade(view, shown, animated: animated, duration: 0.18) }
         setNeedsLayout()
+        if animated {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.layoutIfNeeded() }
+        }
     }
 
     private func sendTapped() {
@@ -117,24 +129,51 @@ final class WordsBar: UIView, UITextFieldDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // Laid out the first time where it already is, not grown from nothing in whatever's animating then (a glass
+        // button grown so keeps its symbol where it was laid at no size).
+        guard laidOut else {
+            laidOut = !bounds.isEmpty
+            UIView.performWithoutAnimation {
+                lay()
+                layoutIfNeeded()
+            }
+            return
+        }
+        lay()
+        arriving = []
+    }
+
+    private var laidOut = false
+    /// What's coming into view: put where it goes, to fade in there, not grown from where it last was.
+    private var arriving: [UIView] = []
+
+    private func put(_ view: UIView, _ frame: CGRect) {
+        if arriving.contains(view) {
+            UIView.performWithoutAnimation { view.frame = frame }
+        } else {
+            view.frame = frame
+        }
+    }
+
+    private func lay() {
         let h = bounds.height
-        send.frame = CGRect(x: bounds.width - h, y: 0, width: h, height: h)
-        capsule.frame = CGRect(x: 0, y: 0, width: bounds.width - (sends ? h + 8 : 0), height: h)
+        put(send, CGRect(x: bounds.width - h, y: 0, width: h, height: h))
+        capsule.frame = CGRect(x: 0, y: 0, width: bounds.width - (showing.send ? h + 8 : 0), height: h)
         Chrome.round(capsule)
         // Each symbol its own width and the same room round it: a wide one (a picture with its badge) doesn't run
         // into the words, a narrow one (sparkles) isn't left in a gap.
         var x: CGFloat = 10
-        for button in [suggest, attach] where !button.isHidden {
+        for (button, shown) in [(suggest, showing.suggest), (attach, showing.attach)] where shown {
             let w = ceil(button.intrinsicContentSize.width) + 12
-            button.frame = CGRect(x: x, y: 0, width: w, height: h)
+            put(button, CGRect(x: x, y: 0, width: w, height: h))
             x += w
         }
         x = x == 10 ? 18 : x + 6
-        var right = capsule.bounds.width - (clear.isHidden ? 16 : 40)
-        clear.frame = CGRect(x: capsule.bounds.width - 40, y: 0, width: 36, height: h)
-        if !price.isHidden {
+        var right = capsule.bounds.width - (showing.clear ? 40 : 16)
+        put(clear, CGRect(x: capsule.bounds.width - 40, y: 0, width: 36, height: h))
+        if showing.price {
             let w = ceil(price.sizeThatFits(bounds.size).width)
-            price.frame = CGRect(x: right - w, y: 0, width: w, height: h)
+            put(price, CGRect(x: right - w, y: 0, width: w, height: h))
             right -= w + 8
         }
         field.frame = CGRect(x: x, y: 0, width: max(0, right - x), height: h)
@@ -236,6 +275,7 @@ final class ResultPill: UIView {
     private let count = UILabel()
     private let again = UIButton(configuration: .plain())
     private let more: UIButton
+    private var showsMore = false
     private let style: HangarStyle
     private var take = 0
     private var takes = 1
@@ -273,16 +313,24 @@ final class ResultPill: UIView {
 
     /// The step's takes and the one used; whether it's laid only where it was asked (`masked`, nil for a step laid
     /// whole), whether that's shown; and whether another can be asked for.
-    func show(take: Int, of takes: Int, masked: Bool?, showingKept: Bool, canAgain: Bool) {
+    /// The takes as they are: the count cross-dissolving, what comes and goes fading, the rest moving to make room
+    /// (`animated`).
+    func show(take: Int, of takes: Int, masked: Bool?, showingKept: Bool, canAgain: Bool, animated: Bool) {
         self.take = take
         self.takes = takes
-        count.text = "\(take + 1) / \(takes)"
+        let text = "\(take + 1) / \(takes)"
+        if animated, count.text != text, !count.isHidden {
+            UIView.transition(with: count, duration: 0.2, options: [.transitionCrossDissolve, .beginFromCurrentState]) { self.count.text = text }
+        } else {
+            count.text = text
+        }
         count.accessibilityLabel = "Take \(take + 1) of \(takes)"
         back.isEnabled = take > 0
         forward.isEnabled = take < takes - 1
-        for view in [back, count, forward] { view.isHidden = takes < 2 }
+        for view in [back, count, forward] as [UIView] { Chrome.fade(view, takes >= 2, animated: animated, duration: 0.18) }
         again.isEnabled = canAgain
-        more.isHidden = masked == nil
+        showsMore = masked != nil
+        Chrome.fade(more, masked != nil, animated: animated, duration: 0.18)
         if let masked {
             more.menu = UIMenu(children: [
                 UIMenu(options: .displayInline, children: [
@@ -300,7 +348,7 @@ final class ResultPill: UIView {
         var w: CGFloat = 8
         if takes >= 2 { w += 36 + 52 + 36 }
         w += ceil(again.sizeThatFits(CGSize(width: 200, height: Self.height)).width)
-        if !more.isHidden { w += 40 }
+        if showsMore { w += 40 }
         return w + 8
     }
 
@@ -310,12 +358,11 @@ final class ResultPill: UIView {
         Chrome.round(capsule)
         let h = bounds.height
         var x: CGFloat = 8
-        if takes >= 2 {
-            back.frame = CGRect(x: x, y: 0, width: 36, height: h)
-            count.frame = CGRect(x: x + 36, y: 0, width: 52, height: h)
-            forward.frame = CGRect(x: x + 88, y: 0, width: 36, height: h)
-            x += 124
-        }
+        // Laid where they go while they're hidden too: to fade in there, not grow from nothing.
+        back.frame = CGRect(x: x, y: 0, width: 36, height: h)
+        count.frame = CGRect(x: x + 36, y: 0, width: 52, height: h)
+        forward.frame = CGRect(x: x + 88, y: 0, width: 36, height: h)
+        if takes >= 2 { x += 124 }
         let w = ceil(again.sizeThatFits(CGSize(width: 200, height: h)).width)
         again.frame = CGRect(x: x, y: 0, width: w, height: h)
         x += w

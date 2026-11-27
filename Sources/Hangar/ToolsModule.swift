@@ -155,6 +155,7 @@ public final class HangarToolsModule: HangarModule {
 
         pill = ResultPill(style: style)
         pill.isHidden = true
+        pill.alpha = 0
         pill.onTake = { [weak self] i in self?.useTake(i) }
         pill.onAgain = { [weak self] in self?.again() }
         pill.onMasked = { [weak self] masked in self?.setMasked(masked) }
@@ -236,17 +237,18 @@ public final class HangarToolsModule: HangarModule {
 
         // Shown or not.
         if isChosen {
+            let fades = fades
             strip.isHidden = tools.count < 2
-            ruler.isHidden = !(tool.paints || values)
-            bar.isHidden = !words
-            chips.isHidden = !hasChips
-            action.isHidden = !hasAction
-            references.isHidden = picked.isEmpty || !words
+            Chrome.fade(ruler, tool.paints || values, animated: fades)
+            Chrome.fade(bar, words, animated: fades)
+            Chrome.fade(chips, hasChips, animated: fades)
+            Chrome.fade(action, hasAction, animated: fades)
+            Chrome.fade(references, !picked.isEmpty && words, animated: fades)
             pad.isHidden = !values
-            frameBox.isHidden = !(isExtend || isCloseUp) || !stage.hasPicture
+            Chrome.fade(frameBox, (isExtend || isCloseUp) && stage.hasPicture, animated: fades)
             h.showName(nameTaken ? nil : title(for: tool))
         }
-        dot.isHidden = { if case .light = tool.kind { false } else { true } }()
+        Chrome.fade(dot, { if case .light = tool.kind { true } else { false } }(), animated: fades)
         pad.takesTwo = { if case .reframe = tool.kind { true } else { false } }()
 
         // Along the picture's foot, from the bottom: on an iPad the words, the values and the button; on a phone the
@@ -265,7 +267,7 @@ public final class HangarToolsModule: HangarModule {
                 bar.frame = CGRect(x: layout.safeArea.left + 16, y: layout.modeBar.minY - 151.7 - 24, width: across, height: 48)
             }
             references.frame = CGRect(x: bar.frame.minX + 4, y: bar.frame.minY - ReferenceRow.side - 10, width: bar.frame.width, height: ReferenceRow.side)
-            if !references.isHidden {
+            if !picked.isEmpty {
                 foot = min(foot, references.frame.minY - gap)
                 if sideways { along.append(references) }
             }
@@ -312,7 +314,7 @@ public final class HangarToolsModule: HangarModule {
             self.stage.layoutIfNeeded()
         }
         if animated, isChosen { UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState], animations: change) } else { change() }
-        if animated, isChosen {
+        if animated, isChosen, !crossfading {
             for (view, shown, frame) in was where shown && !view.isHidden && view.frame != frame {
                 let to = view.frame
                 view.frame = frame
@@ -381,15 +383,32 @@ public final class HangarToolsModule: HangarModule {
         guard let layout else { return }
         let region = layout.region
         var top = region.minY + 4
-        if !pill.isHidden {
-            let width = min(pill.fittingWidth, region.width - 32)
-            pill.frame = CGRect(x: (region.midX - width / 2).rounded(), y: top, width: width, height: ResultPill.height)
-            top = pill.frame.maxY + 8
+        // The takes coming put where they go, to fade in there; the words' platter its new size at once (its words
+        // cross-dissolving, not cut by a platter growing round them), moved to where it goes.
+        let place = {
+            if self.pillShown {
+                let width = min(self.pill.fittingWidth, region.width - 32)
+                let frame = CGRect(x: (region.midX - width / 2).rounded(), y: top, width: width, height: ResultPill.height)
+                if self.pill.isHidden || self.pill.alpha < 0.01 {
+                    UIView.performWithoutAnimation { self.pill.frame = frame }
+                } else {
+                    self.pill.frame = frame
+                }
+                top = frame.maxY + 8
+            }
+            let width = min(region.width - 32, 360)
+            let fits = self.hint.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            let size = CGSize(width: min(width, ceil(fits.width)), height: ceil(fits.height))
+            let frame = CGRect(x: (region.midX - size.width / 2).rounded(), y: top, width: size.width, height: size.height)
+            UIView.performWithoutAnimation { self.hint.bounds.size = frame.size }
+            self.hint.center = CGPoint(x: frame.midX, y: frame.midY)
         }
-        let width = min(region.width - 32, 360)
-        let fits = hint.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        let size = CGSize(width: min(width, ceil(fits.width)), height: ceil(fits.height))
-        hint.frame = CGRect(x: (region.midX - size.width / 2).rounded(), y: top, width: size.width, height: size.height)
+        // Moved, where it shows: the hint making room for the takes, or taking theirs.
+        if fades, !hint.isHidden, hint.window != nil {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction], animations: place)
+        } else {
+            place()
+        }
     }
 
     /// The words over the keyboard while it's up.
@@ -417,9 +436,16 @@ public final class HangarToolsModule: HangarModule {
             let isEdit = { if case .edit = tool.kind { true } else { false } }()
             bar.configure(words, painted: !stage.lines.isEmpty, working: working, sends: tool.action == nil,
                           needsPaint: false, attaches: isEdit && tool.pickReference != nil && picked.count < 3,
-                          price: tool.price)
+                          price: tool.price, animated: fades)
         }
-        action.isEnabled = !working && canWork
+        let enabled = !working && canWork
+        if enabled != action.isEnabled, fades, !action.isHidden, action.window != nil {
+            UIView.transition(with: action, duration: 0.2, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+                self.action.isEnabled = enabled
+            }
+        } else {
+            action.isEnabled = enabled
+        }
         updatePill()
         placeHint()
     }
@@ -445,7 +471,10 @@ public final class HangarToolsModule: HangarModule {
             return
         }
         hint.isHidden = false
+        // In the editor's cross-dissolve: placed as they'll be, nothing fading of its own.
+        quiet = true
         arrange()
+        quiet = false
     }
 
     /// Into Tools: the stage over the canvas, in its place, showing the edit.
@@ -466,6 +495,14 @@ public final class HangarToolsModule: HangarModule {
 
     /// Whether the stage's picture moves to its place once it's there (just into Tools).
     private var settling = false
+    /// While the mode's shown with the editor's own cross-dissolve, or a tool's controls cross-fade into another's:
+    /// nothing fades on its own.
+    private var quiet = false
+    private var crossfading = false
+    /// Whether what comes and goes fades: once Tools is in, not in a cross-fade.
+    private var fades: Bool { isChosen && h.hasEntered && !quiet && !crossfading }
+    /// Whether the step's takes are over the picture (or on their way).
+    private var pillShown = false
 
     /// The stage shows the picture: the canvas hidden, everything placed.
     private func stageShown() {
@@ -555,9 +592,14 @@ public final class HangarToolsModule: HangarModule {
             if isChosen { h.showName(takesName(tool) ? nil : title(for: tool)) }
             return
         }
+        // The controls as they are cross-fade into the new tool's, each where it goes.
+        let crossfade = fades ? Chrome.Crossfade([bar, chips, action, references, ruler, frameBox, dot, hint]) : nil
+        crossfading = crossfade != nil
         setTool(tools[index])
         arrange(animated: true)
         toolShown()
+        crossfading = false
+        crossfade?.run()
     }
 
     /// A tool chosen: what was asked of another let go, the stage made ready for it.
@@ -1064,27 +1106,25 @@ public final class HangarToolsModule: HangarModule {
 
     private func updatePill() {
         guard let step = takesStep else {
-            if !pill.isHidden {
-                pill.isHidden = true
-                pill.alpha = 0
-            }
+            pillShown = false
+            Chrome.fade(pill, false, animated: fades)
             if showingKept { showKept(false) }
             return
         }
+        let coming = !pillShown
+        pillShown = true
         pill.show(take: step.take, of: step.takes.count, masked: step.wholes.isEmpty && (step.mask == nil || step.replaces) ? nil : step.masked,
-                  showingKept: showingKept, canAgain: step.takes.count < Self.mostTakes && lastJob != nil)
-        if pill.isHidden {
-            pill.isHidden = false
-            UIView.animate(withDuration: 0.2) { self.pill.alpha = 1 }
-        }
+                  showingKept: showingKept, canAgain: step.takes.count < Self.mostTakes && lastJob != nil, animated: fades && !coming)
+        if coming { placeHint() }
+        Chrome.fade(pill, true, animated: fades)
     }
 
     /// The takes put away: something else has begun.
     private func collapseResult(keepingResult: Bool = false) {
         if !keepingResult { result = nil }
         if showingKept { showKept(false) }
-        pill.isHidden = true
-        pill.alpha = 0
+        pillShown = false
+        Chrome.fade(pill, false, animated: fades)
         placeHint()
     }
 
@@ -1159,10 +1199,27 @@ public final class HangarToolsModule: HangarModule {
     /// Says `words` in the platter, for a while then back to the tool's hint (nil: until said otherwise).
     private func say(_ words: String, for seconds: TimeInterval? = nil) {
         hintTimer?.invalidate()
+        let changed = hint.text != words
+        // The words cross-dissolve: what was said a picture of it at its own size, fading out over what's said now at
+        // its, fading in (neither cut to the other's platter).
+        var shot: UIView?
+        if changed, fades, !hint.isHidden, hint.alpha > 0.01, hint.window != nil, let superview = hint.superview,
+           let old = hint.snapshotView(afterScreenUpdates: false) {
+            old.frame = hint.frame
+            old.isUserInteractionEnabled = false
+            superview.insertSubview(old, aboveSubview: hint)
+            hint.alpha = 0
+            shot = old
+        }
         hint.text = words
         hint.accessibilityLabel = words
         placeHint()
-        UIView.animate(withDuration: 0.2) { self.hint.alpha = words.isEmpty ? 0 : 1 }
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.hint.alpha = words.isEmpty ? 0 : 1
+            shot?.alpha = 0
+        } completion: { _ in
+            shot?.removeFromSuperview()
+        }
         guard let seconds else { return }
         hintTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {

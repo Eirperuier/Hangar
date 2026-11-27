@@ -118,7 +118,12 @@ public final class HangarFiltersModule: HangarModule {
         ruler.set(edit.filterAmount)
         ruler.setState(enabled: edit.filter != nil, dimmed: false, animated: host?.hasEntered ?? false)
         if chosen {
-            ruler.alpha = edit.filter == nil ? 0 : 1
+            let alpha: CGFloat = edit.filter == nil ? 0 : 1
+            if host?.hasEntered ?? false, ruler.alpha != alpha {
+                UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.ruler.alpha = alpha }
+            } else {
+                ruler.alpha = alpha
+            }
             makeThumbnails()
         }
     }

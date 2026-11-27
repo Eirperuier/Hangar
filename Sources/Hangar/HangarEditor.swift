@@ -141,6 +141,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     private let blocker = UIView()
     /// The bars and every mode's controls, over the picture: what changes as a mode's chosen.
     private let controls = PassingView()
+    /// While the controls cross-dissolve from one mode's to another's: nothing in them animates on its own.
+    private var changingMode = false
 
     public init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system,
                 modules: [any HangarModule]? = nil, assets: (any HangarAssets)? = HangarAssetFolder.caches) {
@@ -657,10 +659,20 @@ public final class HangarEditor: UIViewController, HangarHost {
     }
 
     public func showName(_ name: String?) {
-        nameLabel.isHidden = name == nil
+        // Faded in and out, a new name cross-dissolving, once the editor's in and not changing modes (whose own
+        // cross-dissolve takes it).
+        let animated = entered && !changingMode
+        Chrome.fade(nameLabel, name != nil, animated: animated, duration: 0.18)
         guard let name else { return }
-        nameLabel.attributedText = NSAttributedString(string: name.uppercased(), attributes: [.font: style.nameFont,
-                                                                                              .foregroundColor: style.secondary])
+        let text = NSAttributedString(string: name.uppercased(), attributes: [.font: style.nameFont, .foregroundColor: style.secondary])
+        guard text != nameLabel.attributedText else { return }
+        if animated, nameLabel.alpha > 0.01 {
+            UIView.transition(with: nameLabel, duration: 0.15, options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]) {
+                self.nameLabel.attributedText = text
+            }
+        } else {
+            nameLabel.attributedText = text
+        }
     }
 
     public func showBars(_ shown: Bool, duration: TimeInterval, delay: TimeInterval) {
@@ -701,14 +713,16 @@ public final class HangarEditor: UIViewController, HangarHost {
         let old = current
         current = next
         // The controls cross-dissolve; the picture (a mode's own, flying to its place) doesn't.
+        changingMode = true
         UIView.transition(with: controls, duration: entered ? 0.2 : 0, options: [.transitionCrossDissolve, .allowUserInteraction]) {
             for module in self.modules where module !== next { module.show(false) }
             next.show(true)
             self.historyBar.isHidden = next.ownsTopBar
             self.moreButton.isHidden = next.ownsTopBar
             self.titleLabel.isHidden = !self.sideways || !next.showsTitle
+            self.titleLabel.text = next.item.name.uppercased()
         }
-        titleLabel.text = next.item.name.uppercased()
+        changingMode = false
         if let old, old !== next { old.left() }
         next.entered()
         // The name sits a mode's own height (Filters' a little higher).
@@ -756,11 +770,21 @@ public final class HangarEditor: UIViewController, HangarHost {
         if changed != (doneButton.configuration?.baseBackgroundColor == style.accent) {
             let replacement = Chrome.button("checkmark", label: "Done", style: style, prominent: changed)
             replacement.frame = doneButton.frame
-            replacement.alpha = doneButton.alpha
             replacement.addAction(UIAction { [weak self] _ in self?.doneTapped() }, for: .touchUpInside)
             controls.insertSubview(replacement, aboveSubview: doneButton)
-            doneButton.removeFromSuperview()
+            // The one cross-fading into the other (it lights up as there's something to keep).
+            let old = doneButton, shown = old.alpha
             doneButton = replacement
+            if entered, view.window != nil, !old.isHidden {
+                replacement.alpha = 0
+                UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    replacement.alpha = shown
+                    old.alpha = 0
+                } completion: { _ in old.removeFromSuperview() }
+            } else {
+                replacement.alpha = shown
+                old.removeFromSuperview()
+            }
         }
         doneButton.isEnabled = changed
     }

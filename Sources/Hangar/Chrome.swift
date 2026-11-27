@@ -63,6 +63,92 @@ enum Chrome {
     }
 
     private static let glassKey = "hangar.glass"
+    private static let shownKey = "hangar.shown"
+
+    /// A view shown or hidden: at once, or faded in (`animated`), each part its own way (`show`: glass by its own
+    /// coming and going, anything else by its alpha). One going is hidden once it's gone, unless it was asked back
+    /// meanwhile; one already where it's asked to be is left alone.
+    static func fade(_ view: UIView, _ shown: Bool, animated: Bool, duration: TimeInterval = 0.22) {
+        let asked = view.layer.value(forKey: shownKey) as? Bool
+        view.layer.setValue(shown, forKey: shownKey)
+        let parts = parts(of: view)
+        guard animated, view.window != nil else {
+            view.isHidden = !shown
+            for part in parts { show(part, shown) }
+            return
+        }
+        if shown {
+            guard view.isHidden || asked == false else { return }
+            if view.isHidden {
+                for part in parts { show(part, false) }
+                view.isHidden = false
+            }
+            UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                for part in parts { show(part, true) }
+            }
+        } else {
+            guard !view.isHidden, asked != false else { return }
+            UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                for part in parts { show(part, false) }
+            } completion: { _ in
+                if view.layer.value(forKey: shownKey) as? Bool == false { view.isHidden = true }
+            }
+        }
+    }
+
+    /// What of a view fades on its own: itself, unless it holds glass (faded glass is an empty shell), then each of
+    /// its parts (a control as a whole: its glass is its own).
+    private static func parts(of view: UIView) -> [UIView] {
+        guard !isGlass(view), !(view is UIControl), holdsGlass(view) else { return [view] }
+        return view.subviews.flatMap(parts)
+    }
+
+    private static func isGlass(_ view: UIView) -> Bool {
+        guard #available(iOS 26.0, *), let effect = view as? UIVisualEffectView else { return false }
+        return effect.effect is UIGlassEffect || effect.layer.value(forKey: glassKey) != nil
+    }
+
+    private static func holdsGlass(_ view: UIView) -> Bool {
+        isGlass(view) || !(view is UIControl) && view.subviews.contains(where: holdsGlass)
+    }
+
+    /// How views look now, to go to how they'll look: a picture of each that's showing, over it, fading out off how
+    /// it looks after (a button's new size not cut out of its old one, nothing dimming as both are half there); one
+    /// that's coming fading in, one going fading out. Made before the change, run after it.
+    @MainActor
+    struct Crossfade {
+        private var shots: [UIView] = []
+        private var shown: Set<ObjectIdentifier> = []
+        private let views: [UIView]
+
+        init(_ views: [UIView]) {
+            self.views = views
+            for view in views where !view.isHidden && view.alpha > 0.01 && view.window != nil {
+                guard let superview = view.superview, let shot = view.snapshotView(afterScreenUpdates: false) else { continue }
+                shot.frame = view.frame
+                shot.isUserInteractionEnabled = false
+                superview.insertSubview(shot, aboveSubview: view)
+                shots.append(shot)
+                shown.insert(ObjectIdentifier(view))
+            }
+        }
+
+        func run(duration: TimeInterval = 0.25) {
+            for view in views where !view.isHidden && !shown.contains(ObjectIdentifier(view)) {
+                let parts = Chrome.parts(of: view)
+                for part in parts { Chrome.show(part, false) }
+                view.layer.setValue(true, forKey: Chrome.shownKey)
+                UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                    for part in parts { Chrome.show(part, true) }
+                }
+            }
+            for shot in shots {
+                UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState]) { shot.alpha = 0 } completion: { _ in
+                    shot.removeFromSuperview()
+                }
+            }
+        }
+    }
 
     /// Lays out a capsule's corners where they aren't glass's own.
     static func round(_ view: UIVisualEffectView) {
