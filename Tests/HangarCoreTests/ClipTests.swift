@@ -24,6 +24,26 @@ final class ClipTests: XCTestCase {
         XCTAssertFalse(back.isOriginal)
     }
 
+    func testTheReadmesClipJSONReads() throws {
+        let json = #"""
+        {"adjustments": {"exposure": 0.3}, "filter": "vivid", "filterAmount": 0.8,
+         "clip": {"trim": {"start": 2.0, "end": 9.5}, "muted": true, "speed": 1.5,
+                  "slowMotion": {"range": {"start": 1.0, "end": 5.0}, "rate": 0.125},
+                  "soundtrack": {"asset": "7F3A.m4a", "volume": 0.5, "name": "Calm"}},
+         "steps": [{"tool": "reverse", "takes": ["C1D2.mov"], "take": 0, "replaces": true, "clip": true}]}
+        """#
+        let edit = try JSONDecoder().decode(HangarEdit.self, from: Data(json.utf8))
+        XCTAssertEqual(edit.clip.trim, HangarTimeRange(2, 9.5))
+        XCTAssertTrue(edit.clip.muted)
+        XCTAssertEqual(edit.clip.speed, 1.5)
+        XCTAssertEqual(edit.clip.slowMotion, HangarSlowMotion(range: HangarTimeRange(1, 5), rate: 0.125))
+        XCTAssertEqual(edit.clip.soundtrack, HangarSoundtrack(asset: "7F3A.m4a", volume: 0.5, name: "Calm"))
+        XCTAssertTrue(edit.steps[0].clip)
+        // What's missing is untouched.
+        let bare = try JSONDecoder().decode(HangarEdit.self, from: Data(#"{"clip": {"trim": {"start": 1, "end": 2}}}"#.utf8))
+        XCTAssertEqual(bare.clip, HangarClipEdit(trim: HangarTimeRange(1, 2)))
+    }
+
     func testOnlyAClipsOwnValuesChangeIt() {
         var edit = HangarEdit()
         XCTAssertTrue(edit.isOriginal)
@@ -126,6 +146,28 @@ final class ClipTests: XCTestCase {
         try await HangarClipRenderer().export(edit, source: url, to: out)
         let info = try await HangarClipInfo.load(out)
         XCTAssertFalse(info.hasSound)
+    }
+
+    func testMusicPlaysUnderAMutedClipToItsEnd() async throws {
+        // 2 s of clip, 0.5 s of music (another clip's sound): played four times over, the clip's own sound out.
+        let url = try await Self.clip(frames: 60, size: CGSize(width: 64, height: 48))
+        let music = try await Self.clip(frames: 15, size: CGSize(width: 16, height: 16))
+        let assets = HangarMemoryAssets()
+        var edit = HangarEdit()
+        edit.clip.muted = true
+        edit.clip.soundtrack = HangarSoundtrack(asset: try assets.keep(file: music), volume: 0.5, name: "Test")
+        let renderer = HangarClipRenderer(renderer: HangarRenderer(assets: assets))
+        let playable = try await renderer.playable(edit, source: url)
+        let sound = try await playable.composition.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(sound.count, 1)
+        let heard = try await sound[0].load(.timeRange)
+        XCTAssertEqual(heard.duration.seconds, 2, accuracy: 0.05)
+        XCTAssertNotNil(playable.audioMix)
+        let out = Self.temporary("mov")
+        try await renderer.export(edit, source: url, to: out)
+        let info = try await HangarClipInfo.load(out)
+        XCTAssertTrue(info.hasSound)
+        XCTAssertEqual(info.duration, 2, accuracy: 0.05)
     }
 
     func testExportShapesATurnedClip() async throws {

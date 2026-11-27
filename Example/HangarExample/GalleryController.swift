@@ -230,12 +230,32 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             self.photos.append(.photo(Photo(picture)))
             self.collection.insertItems(at: [IndexPath(item: self.photos.count - 1, section: 0)])
         }
+        editor.pickMusic = { over, _ in await Self.pickMusic(over) }
         editor.onDone = { [weak self] result in
             clip.keep(result) { self?.collection.reloadItems(at: [IndexPath(item: index, section: 0)]) }
         }
         let size = clip.poster?.size ?? CGSize(width: 16, height: 9)
         let frame = HangarEditor.fit(size, in: page.view.bounds, scale: page.view.window?.screen.scale ?? 2)
         editor.present(from: page, source: HangarSource(view: page.view, frame: frame))
+    }
+
+    /// The example's music (make-clips.sh), in a sheet; an app gives its library, or a model that makes music for the
+    /// clip.
+    private static func pickMusic(_ over: UIViewController) async -> HangarMusic? {
+        guard let folder = Bundle.main.url(forResource: "Clips", withExtension: nil),
+              let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).filter({ $0.pathExtension == "m4a" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
+              !files.isEmpty else { return nil }
+        return await withCheckedContinuation { (done: CheckedContinuation<HangarMusic?, Never>) in
+            let sheet = UIAlertController(title: "Music", message: nil, preferredStyle: .actionSheet)
+            for file in files {
+                let name = file.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "music-", with: "").capitalized
+                sheet.addAction(UIAlertAction(title: name, style: .default) { _ in done.resume(returning: HangarMusic(file: file, name: name)) })
+            }
+            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in done.resume(returning: nil) })
+            sheet.popoverPresentationController?.sourceView = over.view
+            sheet.popoverPresentationController?.sourceRect = CGRect(x: over.view.bounds.midX, y: 80, width: 1, height: 1)
+            over.present(sheet, animated: true)
+        }
     }
 
     // MARK: Picking

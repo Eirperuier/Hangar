@@ -87,6 +87,30 @@ let editor = HangarEditor(video: url, modules: [HangarVideoModule(), HangarAdjus
 editor.actions = [reverse]
 ```
 
+Music is the app's to give (`editor.pickMusic`: its library, or a model that makes music for the clip, shown over the editor); Video's More then has Add Music, its volume and Remove Music, each a step to undo.
+
+A clip's edit is the same JSON as a picture's with `clip` beside the rest, so a web canvas or an agent can read and write it:
+
+```json
+{
+  "adjustments": {"exposure": 0.3},
+  "filter": "vivid", "filterAmount": 0.8,
+  "clip": {
+    "trim": {"start": 2.0, "end": 9.5},
+    "muted": true,
+    "speed": 1.5,
+    "slowMotion": {"range": {"start": 1.0, "end": 5.0}, "rate": 0.125},
+    "soundtrack": {"asset": "7F3A….m4a", "volume": 0.5, "name": "Calm"}
+  },
+  "steps": [{"tool": "reverse", "takes": ["C1D2….mov"], "take": 0, "replaces": true, "clip": true}]
+}
+```
+
+- Times are seconds on the clip as its steps make it (after a step that's reversed or continued, on that clip). `trim` missing is all of it; `speed` missing is 1; `muted` missing is false.
+- `slowMotion` is read only for a clip shot at 100 frames a second or more; missing, it's the middle two thirds at `30 / frame rate`. A range of no length plays it all as shot.
+- `soundtrack.asset` and a clip step's `takes` are ids in the app's store (`HangarAssets.file`); `volume` 0 to 1. The music starts with the kept part and plays again from its start until the clip ends.
+- The geometry, adjustments, filter and `drawing` are a picture's, applied to every frame; missing keys are untouched, as for a picture.
+
 A mode of an app's own says which it takes (`takes(_:)`, a picture's, a clip's or both), is told of each frame as it plays (`frameChanged`) and of the frame once it settles (`pictureChanged`), and has the clip's player through its host (`host.player`: its time, playing, seeking).
 
 ## Your own tools

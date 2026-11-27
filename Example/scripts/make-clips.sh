@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Clips to edit in the example, made with ffmpeg from the example's photos (fetch-pictures.sh first): a landscape clip
-# with a silent sound track, panning across a photo; one shot as a phone held upright shoots it (its frames stored on their side, a
-# track transform turning them upright); and a slow-motion one at 240 frames a second. Into Example/Clips, which git
-# ignores; the app takes the folder as it is at build time.
+# with a silent sound track, panning across a photo; one shot as a phone held upright shoots it (its frames stored on
+# their side, a track transform turning them upright); a slow-motion one at 240 frames a second; and music to lay under
+# them. Into Example/Clips, which git ignores; the app takes the folder as it is at build time.
 set -e
 cd "${0:A:h}/.."
 out=Clips
@@ -25,4 +25,13 @@ if [[ ! -s $out/3-slow-motion.mov ]]; then
         -vf "scale=1920:-2,crop=1280:720:x='(iw-1280)*t/6':y='(ih-720)*t/6',format=yuv420p" \
         -t 6 -r 240 -c:v libx264 -crf 22 $out/3-slow-motion.mov
 fi
-ls $out | wc -l | xargs echo clips:
+# Music for Add Music: two soft chords, swelling and fading, quiet.
+if [[ ! -s $out/music-calm.m4a ]]; then
+    $ff -f lavfi -i "aevalsrc='0.05*(sin(2*PI*220*t)+sin(2*PI*277.2*t)+sin(2*PI*329.6*t))*(0.6+0.4*sin(2*PI*0.25*t))':s=44100:d=20" \
+        -af "afade=t=in:d=2,afade=t=out:st=17:d=3" -c:a aac $out/music-calm.m4a
+fi
+if [[ ! -s $out/music-bright.m4a ]]; then
+    $ff -f lavfi -i "aevalsrc='0.05*(sin(2*PI*261.6*t)+sin(2*PI*329.6*t)+sin(2*PI*392*t))*(0.5+0.5*abs(sin(2*PI*1*t)))':s=44100:d=16" \
+        -af "afade=t=in:d=1,afade=t=out:st=14:d=2" -c:a aac $out/music-bright.m4a
+fi
+ls $out/*.mov | wc -l | xargs echo clips:

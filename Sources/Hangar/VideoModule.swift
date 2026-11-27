@@ -172,7 +172,36 @@ public final class HangarVideoModule: HangarModule {
                             attributes: host.undoEdit == nil ? .disabled : []) { [weak self] _ in self?.host?.step(-1) }
         let redo = UIAction(title: name("Redo", from: host.edit, to: host.redoEdit), image: UIImage(systemName: "arrow.uturn.forward"),
                             attributes: host.redoEdit == nil ? .disabled : []) { [weak self] _ in self?.host?.step(1) }
-        return [speeds, UIMenu(options: .displayInline, children: [undo, redo])]
+        var items: [UIMenuElement] = [speeds]
+        if let music = musicMenu() { items.append(music) }
+        return items + [UIMenu(options: .displayInline, children: [undo, redo])]
+    }
+
+    /// Music under the clip: added from the app's picker, its volume, taken out.
+    private func musicMenu() -> UIMenuElement? {
+        guard let host, host.offersMusic else { return nil }
+        guard let soundtrack = host.edit.clip.soundtrack else {
+            return UIAction(title: "Add Music…", image: UIImage(systemName: "music.note")) { [weak self] _ in self?.host?.addMusic() }
+        }
+        let volumes = UIMenu(title: "Volume", image: UIImage(systemName: "speaker.wave.2"), children: [1, 0.75, 0.5, 0.25].map { v in
+            UIAction(title: "\(Int(v * 100))%", state: abs(v - soundtrack.volume) < 0.001 ? .on : .off) { [weak self] _ in
+                guard let host = self?.host, host.edit.clip.soundtrack != nil else { return }
+                host.edit.clip.soundtrack?.volume = v
+                host.commit()
+            }
+        })
+        volumes.subtitle = "\(Int((soundtrack.volume * 100).rounded()))%"
+        let menu = UIMenu(title: "Music", image: UIImage(systemName: "music.note"), children: [
+            UIAction(title: "Replace Music…", image: UIImage(systemName: "arrow.triangle.2.circlepath")) { [weak self] _ in self?.host?.addMusic() },
+            volumes,
+            UIAction(title: "Remove Music", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                guard let host = self?.host else { return }
+                host.edit.clip.soundtrack = nil
+                host.commit()
+            },
+        ])
+        menu.subtitle = soundtrack.name
+        return menu
     }
 
     private func name(_ verb: String, from now: HangarEdit, to other: HangarEdit?) -> String {
@@ -186,6 +215,7 @@ public final class HangarVideoModule: HangarModule {
         if a.slowMotion != b.slowMotion { return "\(verb) Slo-mo Edit" }
         if a.speed != b.speed { return "\(verb) Speed" }
         if a.muted != b.muted { return "\(verb) Mute" }
+        if a.soundtrack != b.soundtrack { return "\(verb) Music" }
         return verb
     }
 }

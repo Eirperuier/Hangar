@@ -189,6 +189,10 @@ public protocol HangarHost: AnyObject {
     var redoEdit: HangarEdit? { get }
     /// A step back or forward (`by` -1 or 1), as Undo and Redo.
     func step(_ by: Int)
+    /// Whether the app offers music for a clip (`HangarEditor.pickMusic`).
+    var offersMusic: Bool { get }
+    /// The app's music picker over the editor; what's picked kept in the store and laid under the clip, one step.
+    func addMusic()
 }
 
 public extension HangarHost {

@@ -103,6 +103,10 @@ public final class HangarEditor: UIViewController, HangarHost {
     public var actions: [HangarAction] = []
     /// A clip's Save Video Frame as Photo in More (not offered if nil): the frame shown, edited, at the clip's size.
     public var onSaveFrame: ((UIImage) -> Void)?
+    /// Music for a clip (Video's More, Add Music; not offered if nil): the app's own picker or maker, shown over the
+    /// editor (`over`), given the clip as it came; nil if nothing was picked. What it gives is kept in the store and
+    /// played under the clip (`HangarClipEdit.soundtrack`) from its kept part's start, again until it ends.
+    public var pickMusic: (@MainActor (_ over: UIViewController, _ clip: URL) async throws -> HangarMusic?)?
     /// What's edited: a picture, or a clip.
     public let media: HangarMedia
     /// A clip's player: its frames on the canvas, its time, playing (nil for a picture).
@@ -1189,6 +1193,25 @@ public final class HangarEditor: UIViewController, HangarHost {
         let item = UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { [weak self] _ in self?.run(job) }
         item.subtitle = action.price
         return item
+    }
+
+    public var offersMusic: Bool { media == .clip && pickMusic != nil && renderer.assets != nil }
+
+    public func addMusic() {
+        guard let pick = pickMusic, let clipSource, let assets = renderer.assets else { return }
+        player?.pause()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let music = try await pick(self, clipSource) else { return }
+                let id = try await Task.detached(priority: .userInitiated) { try assets.keep(file: music.file) }.value
+                let volume = self.edit.clip.soundtrack?.volume ?? 1
+                self.edit.clip.soundtrack = HangarSoundtrack(asset: id, volume: volume, name: music.name)
+                self.commit()
+            } catch {
+                self.tell(error)
+            }
+        }
     }
 
     /// The frame shown, edited, at the clip's size, for the app to keep as a photo.

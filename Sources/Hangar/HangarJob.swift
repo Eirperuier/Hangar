@@ -174,3 +174,15 @@ public struct HangarAction: Sendable {
         }
     }
 }
+
+/// Music for a clip, as the app gives it (`HangarEditor.pickMusic`): a sound file AVFoundation plays (picked from a
+/// library, or made by a model for the clip), and its name to show.
+public struct HangarMusic: Sendable {
+    public var file: URL
+    public var name: String
+
+    public init(file: URL, name: String) {
+        self.file = file
+        self.name = name
+    }
+}
