@@ -46,6 +46,8 @@ public protocol HangarModule: AnyObject {
     var pictureFrame: CGRect? { get }
     /// The editor's closing: anything of the picture's it shows goes at once (the editor flies a copy home).
     func closing()
+    /// The original shown or not (an iPad's Show Original), for a mode that shows the picture itself.
+    func showOriginal(_ shown: Bool)
 }
 
 public extension HangarModule {
@@ -60,6 +62,7 @@ public extension HangarModule {
     var nameRise: CGFloat { 151.7 }
     var pictureFrame: CGRect? { nil }
     func closing() {}
+    func showOriginal(_ shown: Bool) {}
 }
 
 /// A mode's button on the mode bar: Photos' are a symbol over a name, the symbol filled while it's chosen.
@@ -150,6 +153,16 @@ public protocol HangarHost: AnyObject {
     /// Something drawn over the edit on the canvas while a mode wants it (a preview of what it's about to do); nil
     /// for nothing. Any thread.
     var overlay: (@Sendable (CIImage, HangarRenderContext) -> CIImage)? { get set }
-    /// Pixels made elsewhere (`HangarJob`): the picture shimmers while it works, and what it makes becomes a step.
-    func run(_ job: HangarJob)
+    /// The picture before the edit's steps, the same size as `base`: what a finger held on the picture shows (nil
+    /// if a step made the picture another size).
+    var plain: CIImage? { get }
+    /// Pixels made elsewhere (`HangarJob`): the picture shimmers while it works, and what it makes becomes a step;
+    /// then `done`, with whether it did (not if it failed or was cancelled).
+    func run(_ job: HangarJob, done: (@MainActor (Bool) -> Void)?)
+}
+
+public extension HangarHost {
+    func run(_ job: HangarJob) {
+        run(job, done: nil)
+    }
 }

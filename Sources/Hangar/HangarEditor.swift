@@ -135,6 +135,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     private var sideways = false
     /// A job working, and what keeps fingers off everything but Cancel meanwhile.
     private var job: Task<Void, Never>?
+    /// Which job it is: one cancelled and still finishing doesn't end the next.
+    private var jobNumber = 0
     private let blocker = UIView()
 
     public init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system,
@@ -599,6 +601,7 @@ public final class HangarEditor: UIViewController, HangarHost {
                                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
         originalButton.configuration = configuration
         originalButton.accessibilityTraits = comparing ? [.button, .selected] : .button
+        current?.showOriginal(comparing)
         render()
     }
 
@@ -617,6 +620,17 @@ public final class HangarEditor: UIViewController, HangarHost {
     public var base: (image: CIImage, context: HangarRenderContext)? { preview.flatMap { p in previewContext.map { (p, $0) } } }
     public var shaped: (image: CIImage, context: HangarRenderContext)? { shapedImage.flatMap { p in shapedContext.map { (p, $0) } } }
     public var canvasFrame: CGRect { canvas.frame }
+    public var plain: CIImage? {
+        guard edit.steps.allSatisfy({ $0.reach == HangarStep.whole }) else { return nil }
+        return plainPreview.flatMap { p in preview.map { $0.extent.size == p.extent.size ? p : Self.resized(p, to: $0.extent.size) } }
+    }
+
+    private static func resized(_ image: CIImage, to size: CGSize) -> CIImage {
+        let e = image.extent
+        return image.clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: size.width / e.width, y: size.height / e.height))
+            .cropped(to: CGRect(origin: .zero, size: size))
+    }
 
     public func add(_ child: UIView, at level: HangarLevel) {
         switch level {
@@ -728,13 +742,15 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     // MARK: Jobs
 
-    public func run(_ job: HangarJob) {
-        guard self.job == nil, let assets = renderer.assets else { return }
+    public func run(_ job: HangarJob, done: (@MainActor (Bool) -> Void)?) {
+        guard self.job == nil, let assets = renderer.assets else { done?(false); return }
         for module in modules { module.stop() }
         blocker.isHidden = false
         shimmer.run(over: shimmerRegion(job.region))
         UIAccessibility.post(notification: .announcement, argument: job.name)
         let (original, renderer, edit, limit) = (original, renderer, edit, job.longestSide)
+        jobNumber += 1
+        let number = jobNumber
         self.job = Task { [weak self] in
             do {
                 // The picture under the edit, as its steps make it, at most as large as the job takes.
@@ -756,33 +772,37 @@ public final class HangarEditor: UIViewController, HangarHost {
                 guard let self else { return }
                 self.edit.add(step)
                 self.refreshPreview { [weak self] in
-                    self?.endJob()
+                    self?.endJob(number)
                     self?.commit()
+                    done?(true)
                 }
             } catch {
                 guard let self else { return }
-                self.endJob()
+                self.endJob(number)
                 if !(error is CancellationError) { self.tell(error) }
+                done?(false)
             }
         }
     }
 
-    /// Where the picture shimmers: the job's part of it as the canvas shows it (all of the picture once it's shaped
-    /// some other way than cropped).
+    /// Where the picture shimmers: the job's part of it as the picture's shown (its corners where the edit's geometry
+    /// takes them).
     private func shimmerRegion(_ region: CGRect?) -> CGRect {
         let frame = current?.pictureFrame ?? canvas.frame
-        guard let region else { return frame }
+        guard let region, let size = preview?.extent.size, size.width > 0, size.height > 0 else { return frame }
         let g = edit.appliedGeometry
-        guard g.turns == 0, !g.flipped, g.straighten == 0, g.vertical == 0, g.horizontal == 0 else { return frame }
-        let crop = g.crop ?? HangarStep.whole
-        let part = CGRect(x: (region.minX - crop.minX) / crop.width, y: (region.minY - crop.minY) / crop.height,
-                          width: region.width / crop.width, height: region.height / crop.height).intersection(HangarStep.whole)
-        guard !part.isNull else { return frame }
-        return CGRect(x: frame.minX + part.minX * frame.width, y: frame.minY + part.minY * frame.height,
-                      width: part.width * frame.width, height: part.height * frame.height)
+        let shown = g.isIdentity ? size : g.shownSize(for: size)
+        let corners = [CGPoint(x: region.minX, y: region.minY), CGPoint(x: region.maxX, y: region.minY),
+                       CGPoint(x: region.maxX, y: region.maxY), CGPoint(x: region.minX, y: region.maxY)]
+            .map { g.shownPoint(CGPoint(x: $0.x * size.width, y: $0.y * size.height), size: size) }
+            .map { CGPoint(x: frame.minX + $0.x / shown.width * frame.width, y: frame.minY + $0.y / shown.height * frame.height) }
+        let xs = corners.map(\.x), ys = corners.map(\.y)
+        let part = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!).intersection(frame)
+        return part.isNull || part.isEmpty ? frame : part
     }
 
-    private func endJob() {
+    private func endJob(_ number: Int? = nil) {
+        guard number == nil || number == jobNumber else { return }
         job = nil
         blocker.isHidden = true
         shimmer.stop()

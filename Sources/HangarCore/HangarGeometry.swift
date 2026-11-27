@@ -196,6 +196,37 @@ public struct HangarGeometry: Hashable, Sendable, Codable {
         return t
     }
 
+    /// Where a point of a picture of `size` (its pixels from its top left, y down) is in the picture as it's shown
+    /// (`apply`: tilted, straightened, cropped, turned and flipped; from its top left, y down).
+    public func shownPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
+        let middle = CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2)
+        let warped = warp(for: size).apply(middle)
+        let (corner, kept) = keptCorner(for: size)
+        let inKept = CGPoint(x: warped.x - corner.x - kept.width / 2, y: warped.y - corner.y - kept.height / 2)
+        let turned = isSideways ? CGSize(width: kept.height, height: kept.width) : kept
+        let out = inKept.applying(orientation)
+        return CGPoint(x: out.x + turned.width / 2, y: out.y + turned.height / 2)
+    }
+
+    /// Where a point of the picture as it's shown (from its top left, y down) is in the picture of `size` itself
+    /// (its pixels from its top left, y down): what a finger on the shown picture touches of it.
+    public func picturePoint(_ shown: CGPoint, size: CGSize) -> CGPoint {
+        let (corner, kept) = keptCorner(for: size)
+        let turned = isSideways ? CGSize(width: kept.height, height: kept.width) : kept
+        let inKept = CGPoint(x: shown.x - turned.width / 2, y: shown.y - turned.height / 2).applying(orientation.inverted())
+        let warped = CGPoint(x: inKept.x + corner.x + kept.width / 2, y: inKept.y + corner.y + kept.height / 2)
+        let middle = warp(for: size).inverted.apply(warped)
+        return CGPoint(x: middle.x + size.width / 2, y: middle.y + size.height / 2)
+    }
+
+    /// The kept part's top left from the middle (y down) once tilted and straightened, and its size, as `apply` keeps it.
+    private func keptCorner(for size: CGSize) -> (CGPoint, CGSize) {
+        guard !isIdentity else { return (CGPoint(x: -size.width / 2, y: -size.height / 2), size) }
+        let crop = cropRect(for: size)
+        let kept = CGSize(width: max(1, crop.width.rounded()), height: max(1, crop.height.rounded()))
+        return (CGPoint(x: crop.midX - kept.width / 2, y: crop.midY - kept.height / 2), kept)
+    }
+
     // MARK: Drawing
 
     /// The picture tilted, straightened, cropped, turned and flipped, its corner at the origin. `image` is the

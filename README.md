@@ -16,6 +16,7 @@ Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture f
 | Adjust | Auto, Exposure, Brilliance, Highlights, Shadows, Contrast, Brightness, Black Point, Saturation, Vibrance, Warmth, Tint, Sharpness, Definition, Noise Reduction, Vignette |
 | Filters | Vivid, Vivid Warm, Vivid Cool, Dramatic, Dramatic Warm, Dramatic Cool, Mono, Silvertone, Noir, each with how much |
 | Crop | the box's corners and edges, the picture dragged and pinched under it; Straighten, Vertical, Horizontal; Flip, Rotate; Aspect Ratio (Original, Freeform, Square, Wallpaper, 16:9 to 3:2, upright or level, locked); Reset |
+| Tools | brushes over the picture: Clean Up (what's painted taken out) and the app's own, such as an edit of a part of the picture in words; pinch to zoom, hold for the original |
 | ··· | Copy Edits, Paste Edits, Lock Aspect Ratio, Revert to Original |
 
 Video (trimming, and every tool on a clip) comes next.
@@ -89,6 +90,26 @@ editor.actions = [HangarAction(title: "Upscale", symbol: "arrow.up.left.and.arro
 ```
 
 A step's pictures are kept by the app (`HangarAssets`: a folder by default, your storage or server if you like); the edit keeps only their ids. A step is laid over the picture before it where its frame says (more round it for a picture made larger) and as much as its mask says, and the crop, adjustments and filter are drawn on top, so they stay values: change Exposure after the background's gone, and the background stays gone. The example's Remove Background (Vision) is made this way.
+
+## Brushes
+
+Photos' Tools (iOS 27) is brushes: paint over something and it's made again, only the painted part kept. Hangar has the mode and its brushes' handling, not what makes their pictures: that's your model, or something on the device. Give the editor a Tools mode with yours:
+
+```swift
+let cleanUp = HangarBrush.cleanUp(longestSide: 2048) { request in
+    // request.picture: the picture as the edit's steps make it; request.mask: white where it was painted;
+    // request.marked: the picture with the paint on it, for a model that reads marks.
+    [try await server.erase(request.marked, prompt: "Remove the area marked by the translucent blue brush strokes…")]
+}
+let edit = HangarBrush(id: "edit", name: "Edit", symbol: "paintbrush.pointed", hint: "Brush over what to change, then say how.",
+                       working: "Editing…", words: HangarWords(placeholder: "Describe the change")) { request in
+    [try await server.edit(request.marked, request.picture, prompt: request.words ?? "")]
+}
+let editor = HangarEditor(image: image, modules: [HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(),
+                                                  HangarToolsModule(brushes: [cleanUp, edit])])
+```
+
+Clean Up works as the finger lifts; a brush with `words` gathers strokes until they're sent with what's to be done. A model may redraw the whole picture: Hangar keeps only the painted part (2% wider, its edge feathered), meets its tones to the picture's round it (so a model's cast over everything leaves no seam), and refuses one that came back another shape. The strokes are kept with the step, as values on the picture under the crop, so the crop, adjustments and filter can still change after. The example's Clean Up fills from round the paint on the device; a model does far better.
 
 ## Your own look
 
