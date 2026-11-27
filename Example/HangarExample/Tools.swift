@@ -128,7 +128,7 @@ extension HangarTool {
     }
 
     /// A colour named in the words, if one is.
-    private static func named(_ words: String) -> CGColor? {
+    static func named(_ words: String) -> CGColor? {
         let w = words.lowercased()
         let colours: [(String, CGColor)] = [
             ("red", CGColor(srgbRed: 0.9, green: 0.12, blue: 0.1, alpha: 1)), ("blue", CGColor(srgbRed: 0.1, green: 0.35, blue: 0.95, alpha: 1)),

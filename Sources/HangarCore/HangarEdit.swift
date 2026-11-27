@@ -1,8 +1,8 @@
 import Foundation
 
-/// What's been done to a picture: its crop and the rest of its geometry, a value for each adjustment, a filter and how
-/// much of it, what's drawn on it, what an app's own modes keep; and the steps made of pixels (`HangarStep`), by their
-/// pictures' ids. The
+/// What's been done to a picture or a clip: its crop and the rest of its geometry, a value for each adjustment, a
+/// filter and how much of it, what's drawn on it, a clip's trim, sound and speed (`HangarClipEdit`), what an app's own
+/// modes keep; and the steps made of pixels (`HangarStep`), by their pictures' ids. The
 /// picture is drawn from it each time (`HangarRenderer`), so an edit can be changed later, undone a step at a time,
 /// kept beside the original and opened again, as Photos keeps its edits.
 public struct HangarEdit: Hashable, Sendable, Codable {
@@ -23,10 +23,12 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     public var modules: [String: HangarValue]
     /// What's drawn on the picture (Markup's): over it as it's shown, on the part it was drawn on.
     public var drawing: HangarDrawing
+    /// A clip's own: the part kept, its sound, how fast it plays (`HangarClipEdit`). Not read for a picture.
+    public var clip: HangarClipEdit
 
     public init(adjustments: [String: Double] = [:], switchedOff: Set<String> = [], filter: String? = nil, filterAmount: Double = 1,
                 geometry: HangarGeometry = .identity, steps: [HangarStep] = [], modules: [String: HangarValue] = [:],
-                drawing: HangarDrawing = HangarDrawing()) {
+                drawing: HangarDrawing = HangarDrawing(), clip: HangarClipEdit = HangarClipEdit()) {
         self.adjustments = adjustments
         self.switchedOff = switchedOff
         self.filter = filter
@@ -35,6 +37,7 @@ public struct HangarEdit: Hashable, Sendable, Codable {
         self.steps = steps
         self.modules = modules
         self.drawing = drawing
+        self.clip = clip
     }
 
     /// A step added after the others. One that makes the picture larger (its frame past the picture's edges) keeps
@@ -79,12 +82,12 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     /// Whether it changes nothing: the original as it was.
     public var isOriginal: Bool {
         !adjustments.keys.contains(where: applies) && (filter == nil || filterAmount == 0) && appliedGeometry.isIdentity
-            && steps.isEmpty && drawing.isEmpty
+            && steps.isEmpty && drawing.isEmpty && clip.isOriginal
     }
 
     // An edit kept by an older version opens in a newer one: whatever it lacks is untouched.
     private enum CodingKeys: String, CodingKey {
-        case adjustments, switchedOff, filter, filterAmount, geometry, steps, modules, drawing
+        case adjustments, switchedOff, filter, filterAmount, geometry, steps, modules, drawing, clip
     }
 
     public init(from decoder: any Decoder) throws {
@@ -97,5 +100,6 @@ public struct HangarEdit: Hashable, Sendable, Codable {
         steps = try container.decodeIfPresent([HangarStep].self, forKey: .steps) ?? []
         modules = try container.decodeIfPresent([String: HangarValue].self, forKey: .modules) ?? [:]
         drawing = try container.decodeIfPresent(HangarDrawing.self, forKey: .drawing) ?? HangarDrawing()
+        clip = try container.decodeIfPresent(HangarClipEdit.self, forKey: .clip) ?? HangarClipEdit()
     }
 }

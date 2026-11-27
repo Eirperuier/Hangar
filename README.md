@@ -1,6 +1,6 @@
 # Hangar
 
-The editor you know from Photos, for your app's pictures: Adjust, Filters and Crop, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools, its modes and what More offers are yours to add to, and its look is yours to set, so it can speak your app's design rather than Apple's.
+The editor you know from Photos, for your app's pictures and clips: Video, Adjust, Filters and Crop, on iPhone and iPad, light and dark. Tap Edit and the picture flies out of where it was into the editor; drag a ruler and it changes under your finger; tap Done and it flies back, edited. Its tools, its modes and what More offers are yours to add to, and its look is yours to set, so it can speak your app's design rather than Apple's.
 
 Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture flies in and out on Flight's springs, and Flight's viewer (`ImagePreview`) is where it's most at home.
 
@@ -17,9 +17,8 @@ Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture f
 | Filters | Vivid, Vivid Warm, Vivid Cool, Dramatic, Dramatic Warm, Dramatic Cool, Mono, Silvertone, Noir, each with how much |
 | Crop | the box's corners and edges, the picture dragged and pinched under it; Straighten, Vertical, Horizontal; Flip, Rotate; Aspect Ratio (Original, Freeform, Square, Wallpaper, 16:9 to 3:2, upright or level, locked); Reset |
 | Tools | the app's tools that have a picture made again: Clean Up (what's painted taken out), an edit in words (of a part painted, or all of it), the text changed, Extend (more round it), Reframe (a new camera angle), a light, a Close-Up; each step's takes over the picture, another asked for, the one used chosen |
-| ··· | Copy Edits, Paste Edits, Lock Aspect Ratio, Revert to Original |
-
-Video (trimming, and every tool on a clip) comes next.
+| Video | a clip's trimmer (play, its frames between two handles, the playhead; a timecode as they move, zoomed in under a finger held still), its slow part for a slow-motion clip, Volume, its speed; the clip as a new one or with its edit |
+| ··· | Copy Edits, Paste Edits, Lock Aspect Ratio, Revert to Original; for a clip Save Video Frame as Photo |
 
 ## Quick start
 
@@ -51,6 +50,44 @@ let edit = UIBarButtonItem(image: UIImage(systemName: "slider.horizontal.3"), pr
 })
 preview.page.toolbarItems = [.flexibleSpace(), edit, .flexibleSpace()]
 ```
+
+## Clips
+
+Give the editor a clip (a file AVFoundation plays) and it opens in Video, as Photos does, with the modes that take a clip after it (Adjust, Filters, Crop, Markup; Tools if it has a clip's tools):
+
+```swift
+let editor = HangarEditor(video: clip.url, edit: clip.edit)
+editor.onDone = { result in
+    clip.edit = result.edit                     // the trim, sound and speed with the rest: values, as for a picture
+    clip.poster = result.preview                // the frame shown, edited, at once
+    Task { try await result.export(to: clip.editedURL) }   // the clip edited: its kept part, at its speed, every frame
+}
+editor.onSaveFrame = { photo in library.add(photo) }       // More's Save Video Frame as Photo
+editor.present(from: self, source: HangarSource(view: cell.imageView))
+```
+
+Every frame is drawn with the edit as the picture is (its crop, adjustments, filter and drawing), as it plays, so a ruler moved changes the clip under it. A clip's own values are `edit.clip` (`HangarClipEdit`): the part kept (`trim`, in its seconds), `muted`, `speed` (the whole of it), `slowMotion` (where a slow-motion clip, shot at 100 frames a second or more, plays slowly: its middle two thirds at 30 frames a second until it's changed, as Photos plays it) and `soundtrack` (a sound in the app's store, under it, again until it ends). Once it's trimmed, Done asks Save Video or Save Video as New Clip (`result.asNewClip`): the export is the same, what to keep is the app's. `HangarClipRenderer` is the same drawing without the editor: `export(_:source:to:)`, a frame (`frame(of:at:)`), and the clip backwards (`reversed(_:to:)`, on the device, without its sound).
+
+What's made of a clip elsewhere is a step, as a picture's is: a `HangarClipJob` (from More, `HangarAction(title:symbol:clipJob:)`; or a Tools mode's clip tools) is given the clip as the edit's steps make it, the frame shown and its time, and the trim, and gives back clips (files, kept in the store by `HangarAssets.keep(file:)`); the first is the clip from then on. Say how it plays against the one it was given (`timing`): as long (`.kept`, the trim stays), another length (`.new`), or backwards (`.reversed`, the trim mirrored).
+
+```swift
+let reverse = HangarAction(title: "Reverse", symbol: "backward", clipJob: HangarClipJob(tool: "reverse", name: "Reversing", timing: .reversed) { request in
+    let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+    try await HangarClipRenderer.reversed(request.clip, to: out)
+    return [out]
+})
+let edit = HangarTool.clipEdit(price: "20 credits") { request in
+    // request.clip, request.frame and request.time; request.words; what was painted on the frame: request.boxes
+    // (0 to 1 each way), request.marked (the frame marked as the web marks it), request.mask.
+    [try await server.editVideo(request.clip, words: request.words ?? "", boxes: request.boxes, reference: request.marked)]
+}
+let next = HangarTool.clipContinue { request in [try await server.extendVideo(request.clip, words: request.words)] }
+let editor = HangarEditor(video: url, modules: [HangarVideoModule(), HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(),
+                                               HangarToolsModule(tools: [edit, next])])
+editor.actions = [reverse]
+```
+
+A mode of an app's own says which it takes (`takes(_:)`, a picture's, a clip's or both), is told of each frame as it plays (`frameChanged`) and of the frame once it settles (`pictureChanged`), and has the clip's player through its host (`host.player`: its time, playing, seeking).
 
 ## Your own tools
 
@@ -196,7 +233,7 @@ and add the `Hangar` product (or `HangarCore` alone). Requires iOS 17 or Mac Cat
 
 ## Example
 
-`Example/` is a gallery: photos in a grid, opened in Flight's viewer, edited in Hangar from its toolbar. Run `Example/scripts/fetch-pictures.sh` for photos to edit (or pick your own with +), then `xcodegen generate` in `Example/` and open `HangarExample.xcodeproj`.
+`Example/` is a gallery: photos and clips in a grid, opened in Flight's viewer, edited in Hangar from its toolbar. Run `Example/scripts/fetch-pictures.sh` for photos to edit (or pick your own with +) and `Example/scripts/make-clips.sh` for clips (ffmpeg: one with a sound track, one shot upright on a phone, one in slow motion), then `xcodegen generate` in `Example/` and open `HangarExample.xcodeproj`.
 
 ## License
 

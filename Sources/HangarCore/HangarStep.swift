@@ -33,9 +33,11 @@ public struct HangarStep: Hashable, Sendable, Codable {
     /// Whether what it made is the picture from then on, whatever its size, rather than laid over the one before (a
     /// part of the picture made into the whole of it: Close-Up). Its frame and mask aren't read.
     public var replaces: Bool
+    /// Whether its takes are clips (files in the store, `HangarAssets.file`): the clip from then on, frame for frame.
+    public var clip: Bool
 
     public init(tool: String, takes: [String], take: Int = 0, frame: CGRect = Self.whole, mask: String? = nil,
-                parameters: HangarValue? = nil, masked: Bool = true, wholes: [String] = [], replaces: Bool = false) {
+                parameters: HangarValue? = nil, masked: Bool = true, wholes: [String] = [], replaces: Bool = false, clip: Bool = false) {
         self.tool = tool
         self.takes = takes
         self.take = take
@@ -45,6 +47,7 @@ public struct HangarStep: Hashable, Sendable, Codable {
         self.masked = masked
         self.wholes = wholes
         self.replaces = replaces
+        self.clip = clip
     }
 
     /// The picture it uses.
@@ -73,7 +76,7 @@ public struct HangarStep: Hashable, Sendable, Codable {
 
     // A step kept by an older version opens in a newer one: laid by its mask, over the picture before.
     private enum CodingKeys: String, CodingKey {
-        case tool, takes, take, frame, mask, parameters, masked, wholes, replaces
+        case tool, takes, take, frame, mask, parameters, masked, wholes, replaces, clip
     }
 
     public init(from decoder: any Decoder) throws {
@@ -87,6 +90,7 @@ public struct HangarStep: Hashable, Sendable, Codable {
         masked = try container.decodeIfPresent(Bool.self, forKey: .masked) ?? true
         wholes = try container.decodeIfPresent([String].self, forKey: .wholes) ?? []
         replaces = try container.decodeIfPresent(Bool.self, forKey: .replaces) ?? false
+        clip = try container.decodeIfPresent(Bool.self, forKey: .clip) ?? false
     }
 }
 
@@ -97,6 +101,15 @@ public protocol HangarAssets: Sendable {
     func picture(_ id: String) -> CGImage?
     /// Keeps a picture, giving its id.
     func keep(_ picture: CGImage) throws -> String
+    /// The file kept as `id` (a clip, a sound), nil if it's gone or none are kept.
+    func file(_ id: String) -> URL?
+    /// Keeps a copy of a file (a clip a job made, a sound), giving its id.
+    func keep(file: URL) throws -> String
+}
+
+public extension HangarAssets {
+    func file(_ id: String) -> URL? { nil }
+    func keep(file: URL) throws -> String { throw CocoaError(.featureUnsupported) }
 }
 
 /// Pictures kept as files in a folder, by their ids (PNG, so a picture without a background keeps it so).
@@ -116,7 +129,7 @@ public final class HangarAssetFolder: HangarAssets, @unchecked Sendable {
 
     public func picture(_ id: String) -> CGImage? {
         if let kept = cache.object(forKey: id as NSString) { return kept }
-        guard let source = CGImageSourceCreateWithURL(file(id) as CFURL, nil),
+        guard let source = CGImageSourceCreateWithURL(pictureFile(id) as CFURL, nil),
               let picture = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         else { return nil }
         cache.setObject(picture, forKey: id as NSString)
@@ -125,7 +138,7 @@ public final class HangarAssetFolder: HangarAssets, @unchecked Sendable {
 
     public func keep(_ picture: CGImage) throws -> String {
         let id = UUID().uuidString
-        guard let destination = CGImageDestinationCreateWithURL(file(id) as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+        guard let destination = CGImageDestinationCreateWithURL(pictureFile(id) as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
         CGImageDestinationAddImage(destination, picture, nil)
@@ -134,8 +147,20 @@ public final class HangarAssetFolder: HangarAssets, @unchecked Sendable {
         return id
     }
 
-    private func file(_ id: String) -> URL {
+    private func pictureFile(_ id: String) -> URL {
         url.appendingPathComponent(id).appendingPathExtension("png")
+    }
+
+    /// Files are kept by an id with their own extension (`<uuid>.mov`).
+    public func file(_ id: String) -> URL? {
+        let file = url.appendingPathComponent(id)
+        return id.contains(".") && FileManager.default.fileExists(atPath: file.path) ? file : nil
+    }
+
+    public func keep(file: URL) throws -> String {
+        let id = UUID().uuidString + (file.pathExtension.isEmpty ? "" : "." + file.pathExtension)
+        try FileManager.default.copyItem(at: file, to: url.appendingPathComponent(id))
+        return id
     }
 }
 
@@ -143,6 +168,7 @@ public final class HangarAssetFolder: HangarAssets, @unchecked Sendable {
 public final class HangarMemoryAssets: HangarAssets, @unchecked Sendable {
     private let lock = NSLock()
     private var pictures: [String: CGImage] = [:]
+    private var files: [String: URL] = [:]
 
     public init() {}
 
@@ -156,6 +182,21 @@ public final class HangarMemoryAssets: HangarAssets, @unchecked Sendable {
         let id = UUID().uuidString
         lock.lock()
         pictures[id] = picture
+        lock.unlock()
+        return id
+    }
+
+    public func file(_ id: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return files[id]
+    }
+
+    /// Kept where it is: the file is the caller's to keep while it's used.
+    public func keep(file: URL) throws -> String {
+        let id = UUID().uuidString
+        lock.lock()
+        files[id] = file
         lock.unlock()
         return id
     }

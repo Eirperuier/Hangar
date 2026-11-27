@@ -2,11 +2,11 @@
 
 import PackageDescription
 
-/// Hangar: a picture's editor as Photos has it, Adjust, Filters and Crop (video to come), for iPhone and iPad.
+/// Hangar: a picture's and a clip's editor as Photos has it, Video, Adjust, Filters and Crop, for iPhone and iPad.
 /// Its tools and modes are the app's to add to and its look the app's to set: an adjustment, a filter, a mode, a colour.
 ///
-/// HangarCore: what an edit is (values, and the pictures of steps made elsewhere by their ids) and how a picture is
-/// drawn from it, with Core Image, on any thread: for a thumbnail, a share, a server.
+/// HangarCore: what an edit is (values, and the pictures of steps made elsewhere by their ids) and how a picture or a
+/// clip is drawn from it, with Core Image and AVFoundation, on any thread: for a thumbnail, a share, a server.
 let package = Package(
     name: "Hangar",
     platforms: [.iOS(.v17), .macCatalyst(.v17)],

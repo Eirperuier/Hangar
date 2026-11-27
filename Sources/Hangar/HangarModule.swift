@@ -48,6 +48,13 @@ public protocol HangarModule: AnyObject {
     func closing()
     /// The original shown or not (an iPad's Show Original), for a mode that shows the picture itself.
     func showOriginal(_ shown: Bool)
+    /// Whether it's a mode for a picture, a clip, or both (Video only a clip's; Tools a clip's if it has tools for one).
+    func takes(_ media: HangarMedia) -> Bool
+    /// A clip's next frame is on the canvas (`host.base` is it): anything showing the picture itself drawn again,
+    /// cheaply (it comes as often as the clip's frames). `pictureChanged` follows once the frame shown settles.
+    func frameChanged()
+    /// Whether the small player shows over a clip's picture while it's chosen (not in Video, whose trimmer plays it).
+    var showsPlayer: Bool { get }
 }
 
 public extension HangarModule {
@@ -63,6 +70,15 @@ public extension HangarModule {
     var pictureFrame: CGRect? { nil }
     func closing() {}
     func showOriginal(_ shown: Bool) {}
+    func takes(_ media: HangarMedia) -> Bool { true }
+    func frameChanged() {}
+    var showsPlayer: Bool { true }
+}
+
+/// What's edited: a picture, or a clip (`HangarEditor(video:)`).
+public enum HangarMedia: Sendable {
+    case picture
+    case clip
 }
 
 /// A mode's button on the mode bar: Photos' are a symbol over a name, the symbol filled while it's chosen.
@@ -162,10 +178,25 @@ public protocol HangarHost: AnyObject {
     /// Pixels made elsewhere (`HangarJob`): the picture shimmers while it works, and what it makes becomes a step;
     /// then `done`, with whether it did (not if it failed or was cancelled).
     func run(_ job: HangarJob, done: (@MainActor (Bool) -> Void)?)
+    /// A clip made elsewhere (`HangarClipJob`), as a picture's job: what it makes is the clip from then on.
+    func run(_ job: HangarClipJob, done: (@MainActor (Bool) -> Void)?)
+    /// What's edited.
+    var media: HangarMedia { get }
+    /// A clip's player (nil for a picture): its time, playing, the frame shown.
+    var player: HangarPlayer? { get }
+    /// The edits an undo and a redo go to, if there are (a mode naming them: Undo Trim).
+    var undoEdit: HangarEdit? { get }
+    var redoEdit: HangarEdit? { get }
+    /// A step back or forward (`by` -1 or 1), as Undo and Redo.
+    func step(_ by: Int)
 }
 
 public extension HangarHost {
     func run(_ job: HangarJob) {
+        run(job, done: nil)
+    }
+
+    func run(_ job: HangarClipJob) {
         run(job, done: nil)
     }
 }

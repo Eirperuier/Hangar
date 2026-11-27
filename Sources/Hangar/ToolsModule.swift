@@ -11,7 +11,9 @@ import UIKit
 @MainActor
 public final class HangarToolsModule: HangarModule {
     public let item = HangarModeItem(id: HangarMode.tools.id, name: "Tools", symbol: "wand.and.sparkles", spoken: "Tools")
-    public let tools: [HangarTool]
+    /// Its tools for what's edited: a clip's for a clip, the rest for a picture.
+    public private(set) var tools: [HangarTool]
+    private let allTools: [HangarTool]
 
     private weak var host: (any HangarHost)?
     private var h: any HangarHost { host! }
@@ -61,6 +63,7 @@ public final class HangarToolsModule: HangarModule {
     /// that made it (to ask again), and whether what it keeps is shown.
     private var result: String?
     private var lastJob: HangarJob?
+    private var lastClipJob: HangarClipJob?
     /// Where the last job was shown working (asked again, its strokes gone: their bounds).
     private var lastArea = HangarArea.whole
     private var showingKept = false
@@ -82,8 +85,16 @@ public final class HangarToolsModule: HangarModule {
     public init(tools: [HangarTool]) {
         precondition(!tools.isEmpty, "Tools needs a tool")
         self.tools = tools
+        allTools = tools
         tool = tools[0]
     }
+
+    public func takes(_ media: HangarMedia) -> Bool {
+        allTools.contains { $0.forClip == (media == .clip) }
+    }
+
+    /// A clip's frame isn't played here: the tools work on the frame shown.
+    public var showsPlayer: Bool { false }
 
     public var chrome: [UIView] { [strip, ruler, hint, bar, chips, action, pill, references] }
     public var pictureFrame: CGRect? { isChosen && stage.hasPicture ? stage.pictureFrame(in: h.view) : nil }
@@ -92,6 +103,8 @@ public final class HangarToolsModule: HangarModule {
 
     public func load(in host: any HangarHost) {
         self.host = host
+        tools = allTools.filter { $0.forClip == (host.media == .clip) }
+        tool = tools[0]
         GlowKit.prepare()
         let style = host.style
         stage = ToolStage(style: style)
@@ -458,7 +471,7 @@ public final class HangarToolsModule: HangarModule {
         case .text: found.contains { $0.to != nil }
         case .extend: extendFrame != HangarStep.whole
         case .reframe: HangarReframe.all.contains { abs((values[$0.id] ?? $0.start) - $0.start) > 0.001 }
-        case .light, .closeUp: true
+        case .light, .closeUp, .continue: true
         }
     }
 
@@ -479,6 +492,7 @@ public final class HangarToolsModule: HangarModule {
 
     /// Into Tools: the stage over the canvas, in its place, showing the edit.
     public func entered() {
+        h.player?.pause()
         h.layoutNow()
         stage.unzoom(animated: false)
         stage.isHidden = false
@@ -935,6 +949,7 @@ public final class HangarToolsModule: HangarModule {
     /// What the tool's been asked, back on the picture under the edit's geometry, made by the tool, laid back as
     /// one step.
     private func work() {
+        if let makeClip = tool.makeClip { return workClip(makeClip) }
         guard let base = h.base?.image.extent.size, !working, canWork else { return }
         let geometry = h.edit.appliedGeometry
         let shown = stage.pixelSize
@@ -1015,6 +1030,8 @@ public final class HangarToolsModule: HangarModule {
                 let takes = try await tool.make(.values(picture, values, words: words))
                 return HangarMade(takes: try HangarRetouch.shaped(takes, like: CGSize(width: picture.width, height: picture.height)))
             }
+        case .continue:
+            return
         case .closeUp:
             let part = back(closeBox).intersection(HangarStep.whole)
             asked.region = part
@@ -1034,7 +1051,7 @@ public final class HangarToolsModule: HangarModule {
         case .cleanUp, .edit: stage.lines.isEmpty ? .whole : .painted
         case .text: .boxes(found.compactMap { $0.to == nil ? nil : $0.box })
         case .extend: .around(extendFrame)
-        case .reframe, .light: .whole
+        case .reframe, .light, .continue: .whole
         case .closeUp: .boxes([closeBox])
         }
         lastArea = area == .painted ? .boxes([paintedBounds]) : area
@@ -1049,14 +1066,62 @@ public final class HangarToolsModule: HangarModule {
         }.applying(CGAffineTransform(scaleX: 1 / max(pixels.width, 1), y: 1 / max(pixels.height, 1))).intersection(HangarStep.whole)
     }
 
+    /// A clip's tool: what's painted on the frame shown (back on the frame under the edit's geometry) and the words,
+    /// made into a clip by the tool, the clip from then on.
+    private func workClip(_ makeClip: @escaping @Sendable (HangarClipRequest) async throws -> [URL]) {
+        guard let base = h.base?.image.extent.size, !working, canWork else { return }
+        let geometry = h.edit.appliedGeometry
+        let shorter = min(base.width, base.height)
+        let strokes = stage.lines.map { line in
+            HangarStroke(points: line.points.map { p in
+                let q = geometry.picturePoint(p, size: base)
+                return CGPoint(x: q.x / base.width, y: q.y / base.height)
+            }, width: line.width / shorter)
+        }
+        let words = tool.words != nil && !bar.words.isEmpty ? bar.words : nil
+        let painted = strokes.reduce(CGRect.null) { $0.union($1.bounds(aspect: base.width / base.height)) }.intersection(HangarStep.whole)
+        let boxes = painted.isNull || painted.isEmpty ? [] : [painted]
+        let (marking, shownWidth) = (tool.marking, stage.shownWidth)
+        var asked = ToolAsked(tool: tool.id, words: words)
+        asked.strokes = strokes
+        var job = HangarClipJob(tool: tool.id, name: tool.working, region: boxes.first, parameters: try? HangarValue(asked),
+                                timing: tool.clipTiming) { request in
+            var request = request
+            request.words = words
+            request.boxes = boxes
+            if !strokes.isEmpty {
+                let marks = try HangarToolRequest.painted(request.frame, strokes: strokes, words: words, marking: marking, shownWidth: shownWidth)
+                request.marked = marks.marked
+                request.mask = marks.mask
+            }
+            return try await makeClip(request)
+        }
+        job.shownByMode = true
+        lastClipJob = job
+        let area: HangarArea = stage.lines.isEmpty ? .whole : .painted
+        lastArea = area == .painted ? .boxes([paintedBounds]) : area
+        run(over: area, addsTakes: false) { [weak self] done in self?.h.run(job, done: done) }
+    }
+
     /// The last step's tool asked again the same way: another take of it.
     private func again() {
-        guard var job = lastJob, let step = h.edit.steps.last, step.takes.first == result, step.takes.count < Self.mostTakes else { return }
+        guard let step = h.edit.steps.last, step.takes.first == result, step.takes.count < Self.mostTakes else { return }
+        if step.clip, var job = lastClipJob {
+            job.addsTakes = true
+            return run(over: lastArea, addsTakes: true) { [weak self] done in self?.h.run(job, done: done) }
+        }
+        guard var job = lastJob else { return }
         job.addsTakes = true
         run(job, over: lastArea)
     }
 
     private func run(_ job: HangarJob, over area: HangarArea) {
+        run(over: area, addsTakes: job.addsTakes) { [weak self] done in self?.h.run(job, done: done) }
+    }
+
+    /// A job set working (`start`, told when it's done): shown working over `area`, what was asked let go once it's
+    /// made, its takes over the picture.
+    private func run(over area: HangarArea, addsTakes: Bool, start: (@escaping @MainActor (Bool) -> Void) -> Void) {
         let ran = tool.id
         working = true
         stage.glow.work(area)
@@ -1065,7 +1130,7 @@ public final class HangarToolsModule: HangarModule {
         bar.endEditing(true)
         say(tool.working, for: nil)
         arrange()
-        h.run(job) { [weak self] done in
+        start { [weak self] done in
             guard let self else { return }
             self.working = false
             self.stage.glow.work(nil)
@@ -1074,7 +1139,7 @@ public final class HangarToolsModule: HangarModule {
             if done {
                 // What was asked goes (the takes show what it made); the result's takes over the picture.
                 self.stage.clear(fading: true)
-                if !job.addsTakes {
+                if !addsTakes {
                     self.bar.clearWords()
                     self.picked = []
                     self.references.show([])
@@ -1114,7 +1179,7 @@ public final class HangarToolsModule: HangarModule {
         let coming = !pillShown
         pillShown = true
         pill.show(take: step.take, of: step.takes.count, masked: step.wholes.isEmpty && (step.mask == nil || step.replaces) ? nil : step.masked,
-                  showingKept: showingKept, canAgain: step.takes.count < Self.mostTakes && lastJob != nil, animated: fades && !coming)
+                  showingKept: showingKept, canAgain: step.takes.count < Self.mostTakes && (step.clip ? lastClipJob != nil : lastJob != nil), animated: fades && !coming)
         if coming { placeHint() }
         Chrome.fade(pill, true, animated: fades)
     }

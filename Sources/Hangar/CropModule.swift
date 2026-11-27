@@ -329,7 +329,21 @@ public final class HangarCropModule: HangarModule {
 
     public func pictureChanged() {
         stagePictureFor = nil
+        makingFrame = false
         reloadStage()
+    }
+
+    /// A clip's frame drawn on the stage, as it plays: one at a time, the frames that come meanwhile let go.
+    private var makingFrame = false
+
+    public func frameChanged() {
+        guard isChosen, !makingFrame else { return }
+        makingFrame = true
+        stagePictureFor = nil
+        makeStagePicture { [weak self] picture in
+            self?.stage.show(picture)
+            self?.makingFrame = false
+        }
     }
 
     // MARK: The tools

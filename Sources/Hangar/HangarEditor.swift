@@ -18,16 +18,45 @@ public struct HangarSource {
 }
 
 /// What the editor gives back when it's done: the edit, the picture edited at the editor's size (about the screen's,
-/// at once), and the full picture edited when asked (`render()`, off the main thread).
+/// at once), and the full picture edited when asked (`render()`, off the main thread). For a clip, the frame shown
+/// edited, the clip edited when asked (`export(to:)`), and whether it's to be kept as a new clip.
 public struct HangarResult: Sendable {
     public let edit: HangarEdit
     public let preview: UIImage
+    /// Done's Save Video as New Clip (a trimmed clip): the app keeps what's exported as a clip of its own, the
+    /// original as it was; Save Video keeps the edit with the original, to change later.
+    public let asNewClip: Bool
     let original: UIImage
     let renderer: HangarRenderer
+    /// The clip edited, and the time of the frame shown, for a clip.
+    let clip: URL?
+    let time: Double
 
-    /// The whole picture with the edit, its own size and colours.
+    init(edit: HangarEdit, preview: UIImage, original: UIImage, renderer: HangarRenderer, clip: URL? = nil, time: Double = 0, asNewClip: Bool = false) {
+        self.edit = edit
+        self.preview = preview
+        self.original = original
+        self.renderer = renderer
+        self.clip = clip
+        self.time = time
+        self.asNewClip = asNewClip
+    }
+
+    /// The clip with the edit, written to `url` (a QuickTime movie): its kept part at its speed, its sound, every frame
+    /// edited. Throws for a picture.
+    public func export(to url: URL) async throws {
+        guard let clip else { throw CocoaError(.featureUnsupported) }
+        try await HangarClipRenderer(renderer: renderer).export(edit, source: clip, to: url)
+    }
+
+    /// The whole picture with the edit, its own size and colours (a clip's frame shown, at the clip's size).
     public func render() async -> UIImage? {
-        let (original, edit, renderer) = (original, edit, renderer)
+        let (original, edit, renderer, clip, time) = (original, edit, renderer, clip, time)
+        if let clip {
+            guard let frame = try? await HangarClipRenderer.frame(of: edit.clipSource(clip, assets: renderer.assets), at: time),
+                  let out = renderer.render(edit, to: frame) else { return nil }
+            return UIImage(cgImage: out)
+        }
         return await Task.detached(priority: .userInitiated) {
             guard let picture = original.cgImage ?? HangarEditor.drawn(original) else { return nil }
             let orientation = CGImagePropertyOrientation(original.imageOrientation)
@@ -48,6 +77,7 @@ public struct HangarMode: Hashable, Sendable {
     public static let adjust = HangarMode("adjust")
     public static let filters = HangarMode("filters")
     public static let crop = HangarMode("crop")
+    public static let video = HangarMode("video")
 }
 
 /// Photos' editor for a picture: Adjust (Auto and fifteen adjustments, each on its ruler), Filters (nine looks, each as
@@ -68,8 +98,22 @@ public final class HangarEditor: UIViewController, HangarHost {
     public var onDone: ((HangarResult) -> Void)?
     /// Closed without keeping anything.
     public var onCancel: (() -> Void)?
-    /// Jobs More offers, after Photos' own (Remove Background, Upscale): what they make becomes a step.
+    /// Jobs More offers, after Photos' own (Remove Background, Upscale; a clip's: Reverse): what they make becomes a
+    /// step. A picture's are offered for a picture, a clip's for a clip.
     public var actions: [HangarAction] = []
+    /// A clip's Save Video Frame as Photo in More (not offered if nil): the frame shown, edited, at the clip's size.
+    public var onSaveFrame: ((UIImage) -> Void)?
+    /// What's edited: a picture, or a clip.
+    public let media: HangarMedia
+    /// A clip's player: its frames on the canvas, its time, playing (nil for a picture).
+    public let player: HangarPlayer?
+    /// The clip as it came, for a clip.
+    private let clipSource: URL?
+    /// Auto's reading of a clip's first frame, kept for every frame; the frames' pixels a pixel of the clip's.
+    private var clipReading: HangarRenderContext?
+    private var clipScale = 1.0
+    /// The small player over a clip's picture, in the modes that show it.
+    private let miniPlayer: MiniPlayer?
 
     private let original: UIImage
     public let toolbox: HangarToolbox
@@ -149,8 +193,39 @@ public final class HangarEditor: UIViewController, HangarHost {
     /// While the controls cross-dissolve from one mode's to another's: nothing in them animates on its own.
     private var changingMode = false
 
-    public init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system,
-                modules: [any HangarModule]? = nil, assets: (any HangarAssets)? = HangarAssetFolder.caches) {
+    public convenience init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system,
+                            modules: [any HangarModule]? = nil, assets: (any HangarAssets)? = HangarAssetFolder.caches) {
+        self.init(original: image, clip: nil, time: 0, edit: edit, toolbox: toolbox, style: style,
+                  modules: modules ?? [HangarAdjustModule(), HangarFiltersModule(), HangarCropModule()], assets: assets)
+    }
+
+    /// Photos' editor for a clip (a file AVFoundation plays): Video first (the trimmer, its sound, its speed), then
+    /// the modes that take a clip, every frame drawn with the edit. `poster` is the clip's frame at `time` as it came
+    /// (the picture it flies from; read from the clip if nil); it opens on that frame.
+    public convenience init(video: URL, poster: UIImage? = nil, at time: Double = 0, edit: HangarEdit = HangarEdit(),
+                            toolbox: HangarToolbox = .standard, style: HangarStyle = .system, modules: [any HangarModule]? = nil,
+                            assets: (any HangarAssets)? = HangarAssetFolder.caches) {
+        let renderer = HangarRenderer(toolbox: toolbox, assets: assets)
+        let still = poster ?? Self.frame(of: edit.clipSource(video, assets: renderer.assets), at: time) ?? UIImage()
+        self.init(original: still, clip: video, time: time, edit: edit, toolbox: toolbox, style: style,
+                  modules: modules ?? [HangarVideoModule(), HangarAdjustModule(), HangarFiltersModule(), HangarCropModule()], assets: assets)
+        mode = .video
+    }
+
+    /// A clip's frame, read at once (the editor's made on the main thread; a frame takes a few milliseconds).
+    nonisolated private static func frame(of url: URL, at time: Double) -> UIImage? {
+        let box = StillBox()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            box.image = try? await HangarClipRenderer.frame(of: url, at: time)
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 3)
+        return box.image.map { UIImage(cgImage: $0) }
+    }
+
+    private init(original image: UIImage, clip: URL?, time: Double, edit: HangarEdit, toolbox: HangarToolbox, style: HangarStyle,
+                 modules: [any HangarModule], assets: (any HangarAssets)?) {
         original = image
         self.toolbox = toolbox
         self.style = style
@@ -158,7 +233,12 @@ public final class HangarEditor: UIViewController, HangarHost {
         initialEdit = edit
         self.edit = edit
         history = [edit]
-        self.modules = modules ?? [HangarAdjustModule(), HangarFiltersModule(), HangarCropModule()]
+        let media: HangarMedia = clip == nil ? .picture : .clip
+        self.media = media
+        clipSource = clip
+        player = clip == nil ? nil : HangarPlayer(time: time)
+        miniPlayer = clip == nil ? nil : MiniPlayer(style: style)
+        self.modules = modules.filter { $0.takes(media) }
         closeButton = Chrome.button("xmark", label: "Cancel", style: style)
         historyBar = Chrome.capsule(style)
         originalButton = Chrome.plainButton("square.and.line.vertical.and.square.filled", label: "Show Original", style: style)
@@ -227,6 +307,13 @@ public final class HangarEditor: UIViewController, HangarHost {
         canvas.addGestureRecognizer(hold)
 
         preparePreview()
+        if let player, let miniPlayer {
+            player.onFrame = { [weak self] frame, _ in self?.showFrame(frame) }
+            player.onSettle = { [weak self] in self?.frameSettled() }
+            miniPlayer.player = player
+            controls.addSubview(miniPlayer)
+            loadClip()
+        }
         for module in modules { module.load(in: self) }
         blocker.isHidden = true
         blocker.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(blockedTap(_:))))
@@ -240,7 +327,7 @@ public final class HangarEditor: UIViewController, HangarHost {
     }
 
     private var chromeViews: [UIView] {
-        [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, modeBar] + modules.flatMap(\.chrome)
+        [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, modeBar] + modules.flatMap(\.chrome) + [miniPlayer].compactMap { $0 }
     }
 
     private func module(_ mode: HangarMode) -> (any HangarModule)? {
@@ -265,7 +352,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         guard let picture = drawn.cgImage else { return }
         let plain = CIImage(cgImage: picture).insertingIntermediate(cache: true)
         plainPreview = plain
-        if edit.steps.isEmpty || renderer.assets == nil {
+        if edit.steps.isEmpty || renderer.assets == nil || media == .clip {
             preview = plain
             previewContext = HangarRenderContext(source: plain, scale: Double(fit))
         } else if let picture = original.cgImage ?? Self.drawn(original),
@@ -304,6 +391,13 @@ public final class HangarEditor: UIViewController, HangarHost {
     /// The preview made again if the edit's steps aren't the ones it was made with (undone, pasted, a step made),
     /// off the main thread; then `done`.
     private func refreshPreview(then done: (@MainActor () -> Void)? = nil) {
+        // A clip's player plays it as the edit has it (another clip once a step's made).
+        if media == .clip {
+            loadClip()
+            previewSteps = edit.steps
+            done?()
+            return
+        }
         guard edit.steps != previewSteps else { done?(); return }
         previewSteps = edit.steps
         previewToken += 1
@@ -334,18 +428,55 @@ public final class HangarEditor: UIViewController, HangarHost {
         let g = edit.appliedGeometry
         guard g != shapedGeometry else { return }
         shapedGeometry = g
-        let out = renderer.shape(edit, preview).insertingIntermediate(cache: true)
+        // A clip's frame is drawn once: nothing kept of it on the GPU.
+        let shaped = renderer.shape(edit, preview)
+        let out = media == .clip ? shaped : shaped.insertingIntermediate(cache: true)
         shapedImage = out
         shapedContext = previewContext.resized(to: out, scale: previewContext.scale)
-        previewSize = out.extent.size
         shownSize = .zero
-        view.setNeedsLayout()
+        if out.extent.size != previewSize || media == .picture {
+            previewSize = out.extent.size
+            view.setNeedsLayout()
+        } else {
+            fitShown()
+        }
     }
 
     nonisolated static func drawn(_ image: UIImage) -> CGImage? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = image.scale
         return UIGraphicsImageRenderer(size: image.size, format: format).image { _ in image.draw(at: .zero) }.cgImage
+    }
+
+    // MARK: A clip's frames
+
+    /// The player plays the clip as the edit has it now (its steps' clip, its speed, slow part and sound).
+    private func loadClip() {
+        guard let player, let clipSource else { return }
+        player.load(edit, source: clipSource, renderer: HangarClipRenderer(renderer: renderer), longest: screenLongest)
+    }
+
+    /// A clip's frame on the canvas, the edit over it: what the picture is until the next.
+    private func showFrame(_ frame: CIImage) {
+        let size = frame.extent.size
+        if clipReading == nil, let info = player?.info {
+            clipScale = Double(size.width / max(info.size.width, 1))
+            // Auto reads the first frame, and every frame is done alike.
+            clipReading = HangarRenderContext(source: frame, scale: clipScale)
+        }
+        guard let reading = clipReading else { return }
+        preview = frame
+        plainPreview = frame
+        previewContext = reading.resized(to: frame, scale: clipScale)
+        shapedGeometry = nil
+        shapePreview()
+        render()
+        for module in modules { module.frameChanged() }
+    }
+
+    /// The frame shown has settled (a pause, a seek come to rest): what's made from the picture made again.
+    private func frameSettled() {
+        for module in modules { module.pictureChanged() }
     }
 
     // MARK: Layout
@@ -420,6 +551,14 @@ public final class HangarEditor: UIViewController, HangarHost {
             canvas.frame = Self.fit(previewSize, in: region, scale: view.window?.screen.scale ?? 2)
             fitShown()
         }
+        placeMiniPlayer()
+    }
+
+    /// Over the picture's foot, where it's shown (Crop's box).
+    private func placeMiniPlayer() {
+        guard let miniPlayer else { return }
+        let picture = current?.pictureFrame ?? canvas.frame
+        miniPlayer.frame = CGRect(x: picture.minX, y: picture.maxY - MiniPlayer.height - 8, width: picture.width, height: MiniPlayer.height)
     }
 
     private func fitShown() {
@@ -436,8 +575,8 @@ public final class HangarEditor: UIViewController, HangarHost {
                 .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: down,
                                                                         kCIInputAspectRatioKey: (pixels.width / previewSize.width) / down])
                 .cropped(to: CGRect(origin: .zero, size: pixels))
-                .insertingIntermediate(cache: true)
-            shown = (fitted, previewContext.resized(to: fitted, scale: previewContext.scale * Double(down)))
+            shown = (media == .clip ? fitted : fitted.insertingIntermediate(cache: true),
+                     previewContext.resized(to: fitted, scale: previewContext.scale * Double(down)))
         }
         render()
     }
@@ -520,6 +659,7 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     private func leave(showing picture: UIImage) {
         leaving = true
+        player?.close()
         flight?.stop()
         flyer?.removeFromSuperview()
         view.isUserInteractionEnabled = false
@@ -577,6 +717,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     /// first if the geometry's changed.
     public func render() {
         shapePreview()
+        // Where the picture's shown may have moved with it (Crop's box turned).
+        placeMiniPlayer()
         guard let shown else { return }
         let (renderer, edit, comparing, overlay) = (renderer, edit, comparing, overlay)
         let plain = comparing ? plainShown() : nil
@@ -700,6 +842,11 @@ public final class HangarEditor: UIViewController, HangarHost {
             guard let self, self.barsShown == shown else { return }
             var bars: [UIView] = [self.closeButton, self.doneButton, self.modeBar]
             if !(self.current?.ownsTopBar ?? false) { bars += [self.historyBar, self.moreButton] }
+            // The small player goes with them (Crop's box moving), and comes back where the picture is.
+            if let miniPlayer = self.miniPlayer, self.current?.showsPlayer ?? false {
+                if shown { self.placeMiniPlayer() }
+                bars.append(miniPlayer)
+            }
             UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
                 for bar in bars { Chrome.show(bar, shown) }
             }
@@ -740,6 +887,7 @@ public final class HangarEditor: UIViewController, HangarHost {
             self.moreButton.isHidden = next.ownsTopBar
             self.titleLabel.isHidden = !self.sideways || !next.showsTitle
             self.titleLabel.text = next.item.name.uppercased()
+            self.miniPlayer?.isHidden = !next.showsPlayer
         }
         changingMode = false
         if let old, old !== next { old.left() }
@@ -760,7 +908,10 @@ public final class HangarEditor: UIViewController, HangarHost {
         refreshPreview()
     }
 
-    private func step(_ by: Int) {
+    public var undoEdit: HangarEdit? { historyIndex > 0 ? history[historyIndex - 1] : nil }
+    public var redoEdit: HangarEdit? { historyIndex < history.count - 1 ? history[historyIndex + 1] : nil }
+
+    public func step(_ by: Int) {
         for module in modules { module.stop() }
         let to = historyIndex + by
         guard history.indices.contains(to) else { return }
@@ -806,6 +957,18 @@ public final class HangarEditor: UIViewController, HangarHost {
             }
         }
         doneButton.isEnabled = changed
+        setDoneMenu()
+    }
+
+    /// A trimmed clip's Done asks how to keep it, as Photos': Save Video, or Save Video as New Clip.
+    private func setDoneMenu() {
+        let asks = media == .clip && edit.clip.trim != nil
+        guard asks != doneButton.showsMenuAsPrimaryAction || asks else { return }
+        doneButton.showsMenuAsPrimaryAction = asks
+        doneButton.menu = asks ? UIMenu(title: "Save current video, or save video as new clip to include only the trimmed section.", children: [
+            UIAction(title: "Save Video") { [weak self] _ in self?.finish(asNewClip: false) },
+            UIAction(title: "Save Video as New Clip") { [weak self] _ in self?.finish(asNewClip: true) },
+        ]) : nil
     }
 
     // MARK: Jobs
@@ -873,6 +1036,61 @@ public final class HangarEditor: UIViewController, HangarHost {
         }
     }
 
+    public func run(_ job: HangarClipJob, done: (@MainActor (Bool) -> Void)?) {
+        guard self.job == nil, let assets = renderer.assets, let player, let clipSource, let info = player.info else { done?(false); return }
+        for module in modules { module.stop() }
+        player.pause()
+        blocker.isHidden = false
+        if !job.shownByMode { showWorking(job.region) }
+        UIAccessibility.post(notification: .announcement, argument: job.name)
+        // More takes of the last step are made from the clip before it.
+        var under = edit
+        if job.addsTakes, !under.steps.isEmpty { under.steps.removeLast() }
+        let source = under.clipSource(clipSource, assets: assets)
+        let underInfo = job.addsTakes ? nil : info
+        let (time, trim) = (player.time, edit.clip.trim)
+        jobNumber += 1
+        let number = jobNumber
+        self.job = Task { [weak self] in
+            do {
+                let sourceInfo: HangarClipInfo
+                if let underInfo { sourceInfo = underInfo } else { sourceInfo = try await HangarClipInfo.load(source) }
+                let frame = try await HangarClipRenderer.frame(of: source, at: min(time, sourceInfo.duration))
+                let request = HangarClipRequest(clip: source, info: sourceInfo, frame: frame, time: time, trim: trim)
+                let made = try await job.make(request)
+                try Task.checkCancellation()
+                guard !made.isEmpty else { throw CancellationError() }
+                let takes = try await Task.detached(priority: .userInitiated) { try made.map { try assets.keep(file: $0) } }.value
+                try Task.checkCancellation()
+                guard let self else { return }
+                if job.addsTakes, let last = self.edit.steps.indices.last {
+                    self.edit.steps[last].take = self.edit.steps[last].takes.count
+                    self.edit.steps[last].takes += takes
+                } else {
+                    let step = HangarStep(tool: job.tool, takes: takes, parameters: job.parameters, replaces: true, clip: true)
+                    let timing: HangarEdit.ClipTiming = switch job.timing {
+                    case .kept: .kept
+                    case .new: .new
+                    case .reversed: .reversed(duration: sourceInfo.duration)
+                    }
+                    self.edit.add(step, timing: timing)
+                    // The frame shown is the same moment of a reversed clip.
+                    if case .reversed = job.timing { player.seek(to: sourceInfo.duration - time) }
+                }
+                self.refreshPreview { [weak self] in
+                    self?.endJob(number)
+                    self?.commit()
+                    done?(true)
+                }
+            } catch {
+                guard let self else { return }
+                self.endJob(number)
+                if !(error is CancellationError) { self.tell(error) }
+                done?(false)
+            }
+        }
+    }
+
     /// The picture lit where the job works on it: as it's shown, its part of it.
     private func showWorking(_ region: CGRect?) {
         let frame = current?.pictureFrame ?? canvas.frame
@@ -924,8 +1142,15 @@ public final class HangarEditor: UIViewController, HangarHost {
     // MARK: Leaving
 
     private func doneTapped() {
+        // A trimmed clip's Done is a menu.
+        guard !doneButton.showsMenuAsPrimaryAction else { return }
+        finish(asNewClip: false)
+    }
+
+    private func finish(asNewClip: Bool) {
         let picture = renderedPreview(edit)
-        onDone?(HangarResult(edit: edit, preview: picture, original: original, renderer: renderer))
+        onDone?(HangarResult(edit: edit, preview: picture, original: original, renderer: renderer, clip: clipSource,
+                             time: player?.time ?? 0, asNewClip: asNewClip))
         leave(showing: picture)
     }
 
@@ -952,12 +1177,26 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     /// An app's action in More: its price under its title; a choice of jobs a menu of its own.
     private func menuItem(_ action: HangarAction) -> UIMenuElement {
-        guard let job = action.job else {
-            return UIMenu(title: action.title, image: UIImage(systemName: action.symbol), children: action.choices.map(menuItem))
+        if let job = action.clipJob, media == .clip {
+            let item = UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { [weak self] _ in self?.run(job) }
+            item.subtitle = action.price
+            return item
+        }
+        guard let job = action.job, media == .picture else {
+            return UIMenu(title: action.title, image: UIImage(systemName: action.symbol),
+                          children: action.choices.filter { $0.offered(for: media) }.map(menuItem))
         }
         let item = UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { [weak self] _ in self?.run(job) }
         item.subtitle = action.price
         return item
+    }
+
+    /// The frame shown, edited, at the clip's size, for the app to keep as a photo.
+    private func saveFrame() {
+        guard let onSaveFrame, let clipSource else { return }
+        let result = HangarResult(edit: edit, preview: renderedPreview(edit), original: original, renderer: renderer, clip: clipSource,
+                                  time: player?.time ?? 0)
+        Task { if let picture = await result.render() { onSaveFrame(picture) } }
     }
 
     private static let pasteboardType = "dev.hangar.edit"
@@ -975,8 +1214,14 @@ public final class HangarEditor: UIViewController, HangarHost {
             guard let self, let pasted else { return }
             self.replace(with: pasted)
         })
-        if !actions.isEmpty, renderer.assets != nil {
-            items.append(UIMenu(options: .displayInline, children: actions.map(menuItem)))
+        let offered = actions.filter { $0.offered(for: media) }
+        if !offered.isEmpty, renderer.assets != nil {
+            items.append(UIMenu(options: .displayInline, children: offered.map(menuItem)))
+        }
+        if media == .clip, onSaveFrame != nil {
+            items.append(UIAction(title: "Save Video Frame as Photo", image: UIImage(systemName: "photo.badge.plus")) { [weak self] _ in
+                self?.saveFrame()
+            })
         }
         items.append(UIMenu(options: .displayInline, children: [
             UIAction(title: "Revert to Original", image: UIImage(systemName: "arrow.uturn.backward.circle"),
@@ -1002,6 +1247,11 @@ extension CGImagePropertyOrientation {
         @unknown default: self = .up
         }
     }
+}
+
+/// A frame read off the main thread, for the thread waiting for it.
+private final class StillBox: @unchecked Sendable {
+    var image: CGImage?
 }
 
 /// A view that holds others and takes no touches of its own: what's between them goes to what's under it.

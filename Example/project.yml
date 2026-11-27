@@ -1,4 +1,5 @@
-# The example app: `xcodegen generate` here (and Example/scripts/fetch-pictures.sh for photos to edit), then open
+# The example app: `xcodegen generate` here (and Example/scripts/fetch-pictures.sh for photos to edit, then
+# make-clips.sh for clips), then open
 # HangarExample.xcodeproj.
 name: HangarExample
 options:
@@ -18,6 +19,9 @@ targets:
     sources:
       - path: HangarExample
       - path: Pictures
+        type: folder
+        optional: true
+      - path: Clips
         type: folder
         optional: true
     dependencies:

@@ -44,11 +44,32 @@ final class Photo: PreviewContent {
     }
 }
 
-/// The example: photos in a grid (Example/Pictures, and any picked with +); one tapped opens in Flight's viewer, whose
-/// Edit opens Hangar on it, flying from the viewer's picture and back into it.
+/// A photo or a clip in the grid.
+@MainActor
+enum Item {
+    case photo(Photo)
+    case clip(Clip)
+
+    var content: any PreviewContent {
+        switch self {
+        case .photo(let photo): photo
+        case .clip(let clip): clip
+        }
+    }
+
+    var thumbnail: UIImage? {
+        switch self {
+        case .photo(let photo): photo.shown
+        case .clip(let clip): clip.poster
+        }
+    }
+}
+
+/// The example: photos and clips in a grid (Example/Pictures and Example/Clips, and any picked with +); one tapped
+/// opens in Flight's viewer, whose Edit opens Hangar on it, flying from the viewer's picture and back into it.
 @MainActor
 final class GalleryController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, @preconcurrency PHPickerViewControllerDelegate {
-    private var photos: [Photo] = []
+    private var photos: [Item] = []
     private var collection: UICollectionView!
 
     override func viewDidLoad() {
@@ -84,9 +105,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self, let preview = self.shownPreview else { return }
             var edit = HangarEdit()
+            if let speed = defaults.string(forKey: "speed").flatMap(Double.init) { edit.clip.speed = speed }
             if let exposure = defaults.string(forKey: "exposure").flatMap(Double.init) { edit.set("exposure", to: exposure) }
             edit.filter = defaults.string(forKey: "filter")
-            self.edit(in: preview, startingWith: edit, mode: defaults.string(forKey: "mode").map(HangarMode.init) ?? .adjust)
+            self.edit(in: preview, startingWith: edit, mode: defaults.string(forKey: "mode").map(HangarMode.init))
         }
     }
     #endif
@@ -106,7 +128,20 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         guard let folder = Bundle.main.url(forResource: "Pictures", withExtension: nil),
               let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
         photos = files.filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .compactMap { UIImage(contentsOfFile: $0.path) }.map(Photo.init)
+            .compactMap { UIImage(contentsOfFile: $0.path) }.map { .photo(Photo($0)) }
+        // The clips after the photos (make-clips.sh), each shown by its first frame once it's read.
+        if let folder = Bundle.main.url(forResource: "Clips", withExtension: nil),
+           let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+            for file in files.filter({ $0.pathExtension == "mov" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let clip = Clip(file)
+                photos.append(.clip(clip))
+                let index = photos.count - 1
+                Task {
+                    await clip.makePoster()
+                    self.collection.reloadItems(at: [IndexPath(item: index, section: 0)])
+                }
+            }
+        }
         collection.reloadData()
     }
 
@@ -118,7 +153,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath) as! Cell
-        cell.show(photos[indexPath.item].shown)
+        let item = photos[indexPath.item]
+        cell.show(item.thumbnail)
+        if case .clip = item { cell.markClip(true) } else { cell.markClip(false) }
         return cell
     }
 
@@ -135,7 +172,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private func open(at index: Int) {
         let photos = photos
         let preview = ImagePreviewController(count: photos.count, index: index) { i in
-            PreviewMedia.content(photos[i])
+            PreviewMedia.content(photos[i].content)
         } source: { [weak self] i in
             self?.cell(i).map { PreviewSource(view: $0.picture) }
         }
@@ -155,15 +192,18 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private weak var shownPreview: ImagePreviewController?
 
     /// Hangar on the photo the viewer shows, flying out of it: the viewer fits it to the screen.
-    private func edit(in preview: ImagePreviewController, startingWith edit: HangarEdit? = nil, mode: HangarMode = .adjust) {
+    private func edit(in preview: ImagePreviewController, startingWith edit: HangarEdit? = nil, mode: HangarMode? = nil) {
         let index = preview.index
-        let photo = photos[index]
         let page = preview.page
+        guard case .photo(let photo) = photos[index] else {
+            if case .clip(let clip) = photos[index] { self.edit(clip, at: index, in: preview, startingWith: edit, mode: mode) }
+            return
+        }
         let editor = HangarEditor(image: photo.original, edit: edit ?? photo.edit, modules: [
             HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(), HangarToolsModule(tools: HangarTool.local),
             HangarMarkupModule(),
         ])
-        editor.mode = mode
+        editor.mode = mode ?? .adjust
         // The app's own: in More, after Photos'.
         editor.actions = [.removeBackground, .upscale]
         #if DEBUG
@@ -173,6 +213,28 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             photo.keep(result) { self?.collection.reloadItems(at: [IndexPath(item: index, section: 0)]) }
         }
         let frame = HangarEditor.fit(photo.shown.size, in: page.view.bounds, scale: page.view.window?.screen.scale ?? 2)
+        editor.present(from: page, source: HangarSource(view: page.view, frame: frame))
+    }
+
+    /// Hangar on a clip: Video first, then the modes a clip takes; its frame kept as a photo from More.
+    private func edit(_ clip: Clip, at index: Int, in preview: ImagePreviewController, startingWith edit: HangarEdit?, mode: HangarMode?) {
+        let page = preview.page
+        let editor = HangarEditor(video: clip.original, edit: edit ?? clip.edit, modules: [
+            HangarVideoModule(), HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(),
+            HangarToolsModule(tools: HangarTool.local + HangarTool.localClip), HangarMarkupModule(),
+        ])
+        if let mode { editor.mode = mode }
+        editor.actions = [.removeBackground, .upscale, .reverse, .upscaleClip]
+        editor.onSaveFrame = { [weak self] picture in
+            guard let self else { return }
+            self.photos.append(.photo(Photo(picture)))
+            self.collection.insertItems(at: [IndexPath(item: self.photos.count - 1, section: 0)])
+        }
+        editor.onDone = { [weak self] result in
+            clip.keep(result) { self?.collection.reloadItems(at: [IndexPath(item: index, section: 0)]) }
+        }
+        let size = clip.poster?.size ?? CGSize(width: 16, height: 9)
+        let frame = HangarEditor.fit(size, in: page.view.bounds, scale: page.view.window?.screen.scale ?? 2)
         editor.present(from: page, source: HangarSource(view: page.view, frame: frame))
     }
 
@@ -198,7 +260,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                     }
                 }
                 guard let image else { continue }
-                photos.append(Photo(image))
+                photos.append(.photo(Photo(image)))
                 collection.insertItems(at: [IndexPath(item: photos.count - 1, section: 0)])
             }
         }
@@ -207,6 +269,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
 
 final class Cell: UICollectionViewCell {
     let picture = UIImageView()
+    private let badge = UIImageView(image: UIImage(systemName: "video.fill"))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -215,12 +278,23 @@ final class Cell: UICollectionViewCell {
         picture.frame = contentView.bounds
         picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         contentView.addSubview(picture)
+        badge.tintColor = .white
+        badge.frame = CGRect(x: 6, y: 6, width: 18, height: 12)
+        badge.layer.shadowOpacity = 0.4
+        badge.layer.shadowRadius = 2
+        badge.layer.shadowOffset = .zero
+        contentView.addSubview(badge)
+    }
+
+    func markClip(_ clip: Bool) {
+        badge.isHidden = !clip
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func show(_ image: UIImage) {
+    func show(_ image: UIImage?) {
+        guard let image else { picture.image = nil; return }
         picture.image = image.preparingThumbnail(of: CGSize(width: 400, height: 400 * image.size.height / max(image.size.width, 1))) ?? image
     }
 }

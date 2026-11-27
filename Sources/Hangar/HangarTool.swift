@@ -28,6 +28,8 @@ public struct HangarTool: Sendable {
         case light
         /// A box over a part: that part made the whole picture, at more pixels.
         case closeUp
+        /// A clip's: words for what happens next, if it asks for them; the clip made longer.
+        case `continue`(HangarWords?)
     }
 
     public var id: String
@@ -57,6 +59,11 @@ public struct HangarTool: Sendable {
     /// What it makes: one picture or several takes (the first used). Off the main thread; cancelled with the
     /// editor's Cancel.
     public var make: @Sendable (HangarToolRequest) async throws -> [CGImage]
+    /// What it makes of a clip, for a tool of a clip's (`clipEdit`, `clipContinue`): clips, one or several takes. A
+    /// tool with one is offered for a clip, one without for a picture.
+    public var makeClip: (@Sendable (HangarClipRequest) async throws -> [URL])?
+    /// How what it makes of a clip plays against the clip it was given.
+    public var clipTiming: HangarClipJob.Timing = .kept
 
     public init(id: String, name: String, symbol: String, kind: Kind, hint: String, working: String, done: String? = nil,
                 action: String? = nil, price: String? = nil, marking: HangarMarking = .drawArea(), longestSide: CGFloat? = nil,
@@ -145,6 +152,34 @@ public struct HangarTool: Sendable {
                    action: "Close-Up", price: price, longestSide: longestSide, matchesTones: false, make: make)
     }
 
+    /// A clip changed in words: all of it, or what's painted on the frame shown (the request's `marked` frame, its
+    /// `mask`, and the painted part's `boxes`), as long as it was.
+    public static func clipEdit(words: HangarWords = HangarWords(placeholder: "Describe the change"), price: String? = nil,
+                                make: @escaping @Sendable (HangarClipRequest) async throws -> [URL]) -> HangarTool {
+        var tool = HangarTool(id: "clipEdit", name: "Edit", symbol: "wand.and.rays", kind: .edit(words),
+                              hint: "Say how to change the video. Brush over a part of the frame first to change only that.",
+                              working: "Editing your video…", done: "Your video has been edited.",
+                              price: price, matchesTones: false) { _ in throw CocoaError(.featureUnsupported) }
+        tool.makeClip = make
+        return tool
+    }
+
+    /// A clip made longer: what happens next, from its last frame on.
+    public static func clipContinue(words: HangarWords? = HangarWords(placeholder: "What happens next"), price: String? = nil,
+                                    make: @escaping @Sendable (HangarClipRequest) async throws -> [URL]) -> HangarTool {
+        var tool = HangarTool(id: "clipContinue", name: "Continue", symbol: "forward.end", kind: .continue(words),
+                              hint: "Say what happens next, or let it carry on.", working: "Continuing your video…",
+                              done: "Your video carries on.", action: "Continue", price: price, matchesTones: false) { _ in
+            throw CocoaError(.featureUnsupported)
+        }
+        tool.makeClip = make
+        tool.clipTiming = .new
+        return tool
+    }
+
+    /// Whether it's a clip's tool.
+    var forClip: Bool { makeClip != nil }
+
     /// Whether a finger paints with it.
     var paints: Bool {
         switch kind {
@@ -158,6 +193,7 @@ public struct HangarTool: Sendable {
         switch kind {
         case .edit(let words): words
         case .extend(let words): words
+        case .continue(let words): words
         default: nil
         }
     }
