@@ -65,6 +65,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         loadBundled()
         #if DEBUG
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.runLaunchArguments() }
+        // `-slow 0.1`: every animation a tenth as fast, to look at.
+        if let slow = UserDefaults.standard.string(forKey: "slow").flatMap(Double.init) {
+            HangarEditor.debugSpeed = slow
+        }
         #endif
     }
 

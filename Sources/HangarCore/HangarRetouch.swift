@@ -348,6 +348,20 @@ public enum HangarRetouch {
         return (out, mask, wholes)
     }
 
+    /// Extend's takes laid over the picture by its mask already, each the picture from then on (a step that
+    /// `replaces` it); each as it was made beside them, if its tones were met.
+    public static func extendedWhole(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], wholes: [CGImage]) {
+        let made = try extended(takes, for: request, matchingTones: matchingTones)
+        guard let frame = request.frame else { throw HangarRetouchError.unpainted }
+        let picture = CIImage(cgImage: request.picture), mask = CIImage(cgImage: made.mask)
+        let space = request.picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let laid = try made.takes.map { take in
+            let out = HangarRenderer.lay(CIImage(cgImage: take), mask: mask, in: frame, over: picture)
+            return try drawn(out, out.extent, space)
+        }
+        return (laid, made.wholes)
+    }
+
     /// How far into the picture what's drawn round it fades, of its shorter side.
     public static let extendFeather: CGFloat = 0.015
 

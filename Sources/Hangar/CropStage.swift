@@ -329,10 +329,14 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
     }
 
     private var drag: Drag?
+    /// Where the finger came down: a drag's handle is found there and it's measured from there, not from where the
+    /// pan was first known (a little way on).
+    private var downAt: CGPoint?
     private var pinchStart: (crop: CGRect, location: CGPoint, scale: CGFloat)?
 
     @objc private func touchedDown(_ down: TouchDown) {
         if down.state == .began {
+            downAt = down.location(in: self)
             interacting = true
             touch()
         } else if down.state == .ended || down.state == .cancelled || down.state == .failed {
@@ -361,18 +365,25 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
     }
 
     @objc private func panned(_ pan: UIPanGestureRecognizer) {
-        switch pan.state {
-        case .began:
-            let start = pan.location(in: self).applying(CGAffineTransform(translationX: -pan.translation(in: self).x, y: -pan.translation(in: self).y))
+        if pan.state == .began {
+            let start = downAt ?? pan.location(in: self)
+            downAt = start
             if let h = handle(at: start) { drag = .handle(h, start: box) } else { drag = .picture(start: displayCrop) }
             beganGesture()
-        case .changed:
-            let t = pan.translation(in: self)
+        }
+        // The finger's way from where it came down, from the first that's known of it (a drag is known a little way
+        // on) to where it's let go.
+        if pan.state == .began || pan.state == .changed || pan.state == .ended {
+            let now = pan.location(in: self), from = downAt ?? now
+            let t = CGPoint(x: now.x - from.x, y: now.y - from.y)
             switch drag {
             case .handle(let h, let start)?: resize(h, from: start, by: t)
             case .picture(let start)?: if pinchStart == nil { move(from: start, by: t) }
             case nil: break
             }
+        }
+        switch pan.state {
+        case .began, .changed: break
         default:
             if case .picture? = drag, pinchStart == nil { settleInside() }
             drag = nil
@@ -623,13 +634,22 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
         let turn = CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0)
         let crop = Self.displayRect(displayCrop, turn)
         let newBox = fitted(crop)
-        // Turned a quarter left about the box's middle, scaled onto the new box.
+        // Turned a quarter left about the box's middle, scaled onto the new box, its middle moving onto the new
+        // box's: each frame worked out (a quarter turn and a scale together aren't animated as a turn otherwise).
         let k = newBox.height / box.width
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let linear = CGAffineTransform(a: 0, b: -k, c: k, d: 0, tx: 0, ty: 0)
-        let moved = CGPoint(x: box.midX - center.x, y: box.midY - center.y).applying(linear)
-        let t = linear.concatenating(CGAffineTransform(translationX: newBox.midX - center.x - moved.x, y: newBox.midY - center.y - moved.y))
-        geometryChange(.turn(CATransform3DMakeAffineTransform(t))) {
+        let pivot = CGPoint(x: box.midX - center.x, y: box.midY - center.y)
+        let to = CGPoint(x: newBox.midX - center.x, y: newBox.midY - center.y)
+        let turning: (Double) -> CATransform3D = { p in
+            let angle = -CGFloat.pi / 2 * CGFloat(p), scale = 1 + (k - 1) * CGFloat(p)
+            let at = CGPoint(x: pivot.x + (to.x - pivot.x) * CGFloat(p), y: pivot.y + (to.y - pivot.y) * CGFloat(p))
+            let t = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+                .concatenating(CGAffineTransform(rotationAngle: angle))
+                .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+                .concatenating(CGAffineTransform(translationX: at.x, y: at.y))
+            return CATransform3DMakeAffineTransform(t)
+        }
+        geometryChange(.turn(turning)) {
             self.geometry = next
             self.displayCrop = crop
             self.box = newBox
@@ -651,7 +671,8 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
     }
 
     private enum Change {
-        case turn(CATransform3D)
+        /// The picture's transform as it goes, 0 to 1.
+        case turn((Double) -> CATransform3D)
         case flip
     }
 
@@ -677,9 +698,10 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
         switch change {
         case .turn(let transform):
             // Photos' default timing: a critically damped spring, about 0.4 of a second.
-            UIView.animate(springDuration: 0.4, bounce: 0, initialSpringVelocity: 0, delay: 0, options: []) {
-                self.content.transform3D = transform
-            } completion: { _ in done() }
+            CATransaction.begin()
+            CATransaction.setCompletionBlock(done)
+            content.layer.add(Self.springFrames(0.4, transform), forKey: "turn")
+            CATransaction.commit()
         case .flip:
             CATransaction.begin()
             CATransaction.setCompletionBlock(done)
@@ -691,18 +713,24 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
     /// A half turn over about an upright `offset` from the middle, seen in perspective, frame by frame on a
     /// critically damped spring (Core Animation can't tell a half turn from a mirror by their matrices).
     private static func flipFrames(about offset: CGFloat) -> CAKeyframeAnimation {
-        let frames = 72, duration = 0.6
-        let omega = 2 * Double.pi / 0.45
-        var values: [NSValue] = []
-        for i in 0...frames {
-            let time = duration * Double(i) / Double(frames)
-            let progress = i == frames ? 1 : 1 - (1 + omega * time) * exp(-omega * time)
+        springFrames(0.45) { progress in
             var t = CATransform3DIdentity
             t.m34 = -1 / 1000
             t = CATransform3DTranslate(t, offset, 0, 0)
             t = CATransform3DRotate(t, CGFloat(progress) * .pi, 0, 1, 0)
-            t = CATransform3DTranslate(t, -offset, 0, 0)
-            values.append(NSValue(caTransform3D: t))
+            return CATransform3DTranslate(t, -offset, 0, 0)
+        }
+    }
+
+    /// A transform going 0 to 1 on a critically damped spring of `response` seconds, frame by frame, held at the end.
+    private static func springFrames(_ response: Double, _ transform: (Double) -> CATransform3D) -> CAKeyframeAnimation {
+        let duration = response * 4 / 3, frames = Int(duration * 120)
+        let omega = 2 * Double.pi / response
+        var values: [NSValue] = []
+        for i in 0...frames {
+            let time = duration * Double(i) / Double(frames)
+            let progress = i == frames ? 1 : 1 - (1 + omega * time) * exp(-omega * time)
+            values.append(NSValue(caTransform3D: transform(progress)))
         }
         let animation = CAKeyframeAnimation(keyPath: "transform")
         animation.values = values
@@ -792,7 +820,11 @@ final class CropStage: UIView, UIGestureRecognizerDelegate {
 
     private func tick(_ dt: Double) {
         guard var t = transition else { clock?.stop(); return }
+        #if DEBUG
+        let settled = t.spring.step(dt * HangarEditor.debugSpeed)
+        #else
         let settled = t.spring.step(dt)
+        #endif
         let p = settled ? 1 : t.spring.values[0]
         transition = t
         func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * CGFloat(p) }

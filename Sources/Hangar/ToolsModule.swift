@@ -162,7 +162,7 @@ public final class HangarToolsModule: HangarModule {
         frameBox.onChange = { [weak self] rect in self?.framed(rect) }
         frameBox.onEnd = { [weak self] rect in
             self?.framed(rect)
-            self?.arrange()
+            self?.arrange(animated: true)
         }
 
         host.add(stage, at: .picture)
@@ -282,11 +282,14 @@ public final class HangarToolsModule: HangarModule {
         }
         if animated, isChosen { UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState], animations: change) } else { change() }
         pad.frame = work
+        // The frame goes where the picture's going, with it.
+        let was = frameBox.onScreen
         frameBox.kind = isExtend ? .around : .inside
         frameBox.limit = work.insetBy(dx: 8, dy: 8)
         frameBox.picture = isExtend ? place : stage.pictureFrame(in: h.view)
         frameBox.rect = isExtend ? extendFrame : closeBox
         frameBox.ratio = isExtend ? shapeRatio : nil
+        if animated, isChosen, isExtend, !frameBox.isHidden { frameBox.glide(from: was) }
         placeDot()
         if !found.isEmpty { drawFound() }
         kept.frame = stage.marks.bounds
@@ -297,9 +300,10 @@ public final class HangarToolsModule: HangarModule {
     private func extendPlace(in work: CGRect) -> CGRect {
         let pixels = stage.pixelSize
         let f = extendFrame
-        // The frame fitted under the hint, a little smaller than it could be: room round it to pull it out further
-        // (it's fitted again as it's let go).
-        let room = work.inset(by: UIEdgeInsets(top: 56, left: 16, bottom: 16, right: 16))
+        // The frame fitted under the hint (and a step's takes over it), a little smaller than it could be: room round
+        // it to pull it out further (it's fitted again as it's let go).
+        let top = 56 + (takesStep == nil ? 0 : ResultPill.height + 8)
+        let room = work.inset(by: UIEdgeInsets(top: top, left: 16, bottom: 16, right: 16))
         let fitted = HangarEditor.fit(CGSize(width: f.width * pixels.width, height: f.height * pixels.height),
                                       in: room.insetBy(dx: room.width * 0.09, dy: room.height * 0.09), scale: layout?.scale ?? 2)
         return CGRect(x: fitted.minX - f.minX / f.width * fitted.width, y: fitted.minY - f.minY / f.height * fitted.height,
@@ -383,17 +387,10 @@ public final class HangarToolsModule: HangarModule {
         case .cleanUp: !stage.lines.isEmpty
         case .edit: !bar.words.isEmpty
         case .text: found.contains { $0.to != nil }
-        case .extend: extendFrame != HangarStep.whole && extendable
+        case .extend: extendFrame != HangarStep.whole
         case .reframe: HangarReframe.all.contains { abs((values[$0.id] ?? $0.start) - $0.start) > 0.001 }
         case .light, .closeUp: true
         }
-    }
-
-    /// Extend works on the whole picture: not on one cropped, straightened or tilted (turned and flipped is the
-    /// same picture).
-    private var extendable: Bool {
-        let g = h.edit.appliedGeometry
-        return g.crop == nil && g.straighten == 0 && g.vertical == 0 && g.horizontal == 0
     }
 
     // MARK: Coming and going
@@ -414,8 +411,25 @@ public final class HangarToolsModule: HangarModule {
         stage.unzoom(animated: false)
         stage.isHidden = false
         stage.alpha = 1
+        // From where the canvas shows the picture (what's flown there from another mode) to the tool's place.
+        if let layout {
+            stage.region = layout.region
+            stage.layoutIfNeeded()
+        }
+        settling = h.hasEntered
         say(tool.hint)
         makeStagePicture { [weak self] in self?.toolShown() }
+    }
+
+    /// Whether the stage's picture moves to its place once it's there (just into Tools).
+    private var settling = false
+
+    /// The stage shows the picture: the canvas hidden, everything placed.
+    private func stageShown() {
+        guard isChosen else { return }
+        h.showCanvas(false)
+        arrange(animated: settling)
+        settling = false
     }
 
     public func left() {
@@ -460,7 +474,11 @@ public final class HangarToolsModule: HangarModule {
     private func makeStagePicture(_ done: (@MainActor () -> Void)? = nil) {
         guard let (shaped, context) = h.shaped else { return }
         let edit = h.edit
-        if stagedFor == edit, stage.hasPicture { done?(); return }
+        if stagedFor == edit, stage.hasPicture {
+            stageShown()
+            done?()
+            return
+        }
         stagedFor = edit
         stagedToken += 1
         let token = stagedToken
@@ -481,8 +499,7 @@ public final class HangarToolsModule: HangarModule {
             self.previewSource = nil
             self.stage.show(made.0, original: made.1)
             // The stage shows the picture now, wherever it was asked for first.
-            if self.isChosen { self.h.showCanvas(false) }
-            self.arrange()
+            self.stageShown()
             done?()
         }
     }
@@ -525,8 +542,6 @@ public final class HangarToolsModule: HangarModule {
         switch tool.kind {
         case .text: findText()
         case .reframe, .light: renderPreview()
-        case .extend:
-            if !extendable { say("Extend works on the whole photo. Reset its crop and straightening to extend it.") }
         default: break
         }
         arrange()
@@ -844,6 +859,7 @@ public final class HangarToolsModule: HangarModule {
         let words = tool.words != nil && !bar.words.isEmpty ? bar.words : nil
         var asked = ToolAsked(tool: tool.id, words: words)
         var region: CGRect?
+        var shaped: HangarGeometry?
         let make: @Sendable (CGImage) async throws -> HangarMade
         switch tool.kind {
         case .cleanUp, .edit:
@@ -871,7 +887,7 @@ public final class HangarToolsModule: HangarModule {
                 let made = try HangarRetouch.made(try await tool.make(request), for: request, matchingTones: tool.matchesTones)
                 return HangarMade(takes: made.takes, mask: made.mask, wholes: made.wholes)
             }
-        case .extend:
+        case .extend where geometry.crop == nil && geometry.straighten == 0 && geometry.vertical == 0 && geometry.horizontal == 0:
             // The frame round the picture shown, round the picture (only turned or flipped: a rect still).
             let frame = back(extendFrame).union(HangarStep.whole)
             asked.frame = frame
@@ -879,6 +895,22 @@ public final class HangarToolsModule: HangarModule {
                 let request = try HangarToolRequest.extend(picture, to: frame, words: words)
                 let made = try HangarRetouch.extended(try await tool.make(request), for: request, matchingTones: tool.matchesTones)
                 return HangarMade(takes: made.takes, frame: frame, mask: made.mask, wholes: made.wholes)
+            }
+        case .extend:
+            // Cropped, straightened or tilted: what's extended is the picture as it's shown (its turns and flip
+            // undone), and what's made is the picture from then on, the crop and the rest of it in it.
+            let turned = HangarGeometry(turns: geometry.turns, flipped: geometry.flipped)
+            let f = extendFrame
+            let corners = [CGPoint(x: f.minX, y: f.minY), CGPoint(x: f.maxX, y: f.maxY)]
+                .map { turned.picturePoint($0, size: CGSize(width: 1, height: 1)) }
+            let frame = CGRect(x: min(corners[0].x, corners[1].x), y: min(corners[0].y, corners[1].y),
+                               width: abs(corners[1].x - corners[0].x), height: abs(corners[1].y - corners[0].y)).union(HangarStep.whole)
+            asked.frame = frame
+            shaped = geometry
+            make = { picture in
+                let request = try HangarToolRequest.extend(picture, to: frame, words: words)
+                let made = try HangarRetouch.extendedWhole(try await tool.make(request), for: request, matchingTones: tool.matchesTones)
+                return HangarMade(takes: made.takes, wholes: made.wholes, replaces: true)
             }
         case .reframe, .light:
             let values = values
@@ -898,7 +930,7 @@ public final class HangarToolsModule: HangarModule {
             }
         }
         let job = HangarJob(tool: tool.id, name: tool.working, region: region.flatMap { $0.isNull ? nil : $0 }, longestSide: tool.longestSide,
-                            parameters: try? HangarValue(asked), make: make)
+                            parameters: try? HangarValue(asked), shaped: shaped, make: make)
         lastJob = job
         run(job)
     }
@@ -951,8 +983,13 @@ public final class HangarToolsModule: HangarModule {
     // MARK: The step's takes
 
     /// The takes of the step just made, over the picture while it's the edit's last and nothing else has begun.
+    private var takesStep: HangarStep? {
+        guard isChosen, !working, let result, let step = h.edit.steps.last, step.takes.first == result else { return nil }
+        return step
+    }
+
     private func updatePill() {
-        guard isChosen, !working, let result, let step = h.edit.steps.last, step.takes.first == result else {
+        guard let step = takesStep else {
             if !pill.isHidden {
                 pill.isHidden = true
                 pill.alpha = 0
@@ -960,7 +997,7 @@ public final class HangarToolsModule: HangarModule {
             if showingKept { showKept(false) }
             return
         }
-        pill.show(take: step.take, of: step.takes.count, masked: step.mask == nil || step.replaces ? nil : step.masked,
+        pill.show(take: step.take, of: step.takes.count, masked: step.wholes.isEmpty && (step.mask == nil || step.replaces) ? nil : step.masked,
                   showingKept: showingKept, canAgain: step.takes.count < Self.mostTakes && lastJob != nil)
         if pill.isHidden {
             pill.isHidden = false

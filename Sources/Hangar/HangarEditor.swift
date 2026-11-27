@@ -138,6 +138,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     /// Which job it is: one cancelled and still finishing doesn't end the next.
     private var jobNumber = 0
     private let blocker = UIView()
+    /// The bars and every mode's controls, over the picture: what changes as a mode's chosen.
+    private let controls = PassingView()
 
     public init(image: UIImage, edit: HangarEdit = HangarEdit(), toolbox: HangarToolbox = .standard, style: HangarStyle = .system,
                 modules: [any HangarModule]? = nil, assets: (any HangarAssets)? = HangarAssetFolder.caches) {
@@ -187,6 +189,8 @@ public final class HangarEditor: UIViewController, HangarHost {
         view.addSubview(backdrop)
         view.addSubview(canvas)
         view.addSubview(shimmer)
+        controls.frame = view.bounds
+        view.addSubview(controls)
 
         closeButton.addAction(UIAction { [weak self] _ in self?.closeTapped() }, for: .touchUpInside)
         undoButton.addAction(UIAction { [weak self] _ in self?.step(-1) }, for: .touchUpInside)
@@ -206,7 +210,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         nameLabel.font = style.nameFont
         nameLabel.textColor = style.secondary
         for chrome in [closeButton, historyBar, moreButton, doneButton, titleLabel, nameLabel, modeBar] as [UIView] {
-            view.addSubview(chrome)
+            controls.addSubview(chrome)
         }
         modeBar.onChoose = { [weak self] id in self?.mode = HangarMode(id) }
 
@@ -345,6 +349,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         sideways = traitCollection.horizontalSizeClass == .regular || bounds.width > bounds.height
         backdrop.frame = bounds
         blocker.frame = bounds
+        controls.frame = bounds
         shimmer.frame = bounds
 
         // Photos' top bar: 44-point buttons 12 apart, in from the sides (16 on a phone, 10 on an iPad), from the top of
@@ -445,6 +450,9 @@ public final class HangarEditor: UIViewController, HangarHost {
         super.viewDidAppear(animated)
         guard !entered else { return }
         entered = true
+        #if DEBUG
+        if Self.debugSpeed != 1 { view.window?.layer.speed = Float(Self.debugSpeed) }
+        #endif
         enter()
     }
 
@@ -642,9 +650,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     public func add(_ child: UIView, at level: HangarLevel) {
         switch level {
         case .picture: view.insertSubview(child, belowSubview: shimmer)
-        case .controls:
-            // Over the editor's bars, under what keeps fingers off while a job works.
-            if blocker.superview == nil { view.addSubview(child) } else { view.insertSubview(child, belowSubview: blocker) }
+        // Over the editor's bars; under what keeps fingers off while a job works, which is over all of them.
+        case .controls: controls.addSubview(child)
         }
     }
 
@@ -670,6 +677,8 @@ public final class HangarEditor: UIViewController, HangarHost {
     }
 
     public func showCanvas(_ shown: Bool) {
+        // A mode that's left asks for it as it goes: not while the one chosen shows the picture itself.
+        if shown, current?.pictureFrame != nil { return }
         canvasShown = shown
         // Hidden until it's flown in.
         if entered || !shown { canvas.alpha = shown ? 1 : 0 }
@@ -690,7 +699,8 @@ public final class HangarEditor: UIViewController, HangarHost {
         modeBar.choose(next.item.id)
         let old = current
         current = next
-        UIView.transition(with: view, duration: entered ? 0.2 : 0, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+        // The controls cross-dissolve; the picture (a mode's own, flying to its place) doesn't.
+        UIView.transition(with: controls, duration: entered ? 0.2 : 0, options: [.transitionCrossDissolve, .allowUserInteraction]) {
             for module in self.modules where module !== next { module.show(false) }
             next.show(true)
             self.historyBar.isHidden = next.ownsTopBar
@@ -747,7 +757,7 @@ public final class HangarEditor: UIViewController, HangarHost {
             replacement.frame = doneButton.frame
             replacement.alpha = doneButton.alpha
             replacement.addAction(UIAction { [weak self] _ in self?.doneTapped() }, for: .touchUpInside)
-            view.insertSubview(replacement, aboveSubview: doneButton)
+            controls.insertSubview(replacement, aboveSubview: doneButton)
             doneButton.removeFromSuperview()
             doneButton = replacement
         }
@@ -766,6 +776,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         var under = edit
         if job.addsTakes, !under.steps.isEmpty { under.steps.removeLast() }
         let (original, renderer, limit, before) = (original, renderer, job.longestSide, under)
+        let shaped = job.shaped.map { HangarGeometry(straighten: $0.straighten, vertical: $0.vertical, horizontal: $0.horizontal, crop: $0.crop, aspect: $0.aspect) }
         jobNumber += 1
         let number = jobNumber
         self.job = Task { [weak self] in
@@ -773,9 +784,10 @@ public final class HangarEditor: UIViewController, HangarHost {
                 // The picture under the edit, as its steps make it, at most as large as the job takes.
                 let picture: CGImage = try await Task.detached(priority: .userInitiated) {
                     guard let source = original.cgImage ?? HangarEditor.drawn(original),
-                          let made = HangarEditor.makeBase(source, CGImagePropertyOrientation(original.imageOrientation), renderer, before, limit ?? .greatestFiniteMagnitude),
-                          let out = HangarRenderer.context.createCGImage(made.image, from: made.image.extent)
+                          let made = HangarEditor.makeBase(source, CGImagePropertyOrientation(original.imageOrientation), renderer, before, limit ?? .greatestFiniteMagnitude)
                     else { throw CocoaError(.fileReadCorruptFile) }
+                    let image = shaped?.apply(to: made.image) ?? made.image
+                    guard let out = HangarRenderer.context.createCGImage(image, from: image.extent) else { throw CocoaError(.fileReadCorruptFile) }
                     return out
                 }.value
                 let made = try await job.make(picture)
@@ -797,6 +809,11 @@ public final class HangarEditor: UIViewController, HangarHost {
                     self.edit.steps[last].takes += step.takes
                 } else {
                     self.edit.add(step)
+                    if job.shaped != nil {
+                        // What it made is the picture as the geometry shaped it: only its turns and flip are left.
+                        self.edit.geometry = HangarGeometry(turns: self.edit.geometry.turns, flipped: self.edit.geometry.flipped)
+                        self.edit.switchedOff.subtract(HangarGeometry.toolIDs)
+                    }
                 }
                 self.refreshPreview { [weak self] in
                     self?.endJob(number)
@@ -870,6 +887,11 @@ public final class HangarEditor: UIViewController, HangarHost {
         leave(showing: renderedPreview(initialEdit))
     }
 
+    #if DEBUG
+    /// How fast the editor's own springs run, for looking at them slowly (with the window's layer speed).
+    nonisolated(unsafe) public static var debugSpeed = 1.0
+    #endif
+
     // MARK: More
 
     /// An app's action in More: its price under its title; a choice of jobs a menu of its own.
@@ -923,5 +945,13 @@ extension CGImagePropertyOrientation {
         case .rightMirrored: self = .rightMirrored
         @unknown default: self = .up
         }
+    }
+}
+
+/// A view that holds others and takes no touches of its own: what's between them goes to what's under it.
+final class PassingView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
     }
 }

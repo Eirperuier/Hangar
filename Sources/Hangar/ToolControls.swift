@@ -28,6 +28,8 @@ final class WordsBar: UIView, UITextFieldDelegate {
         capsule = Chrome.capsule(style)
         suggest = Chrome.plainButton("sparkles", label: "Suggestions", style: style)
         attach = Chrome.plainButton("photo.badge.plus", label: "Add a Picture to Go By", style: style)
+        // A picture with its badge is wider and heavier than sparkles at a size: smaller, to sit level with them.
+        attach.configuration?.image = UIImage(systemName: "photo.badge.plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular))
         clear = Chrome.plainButton("xmark.circle.fill", label: "Clear Brush Strokes", style: style)
         send = Chrome.button("arrow.up", label: "Send", style: style, prominent: true)
         super.init(frame: .zero)
@@ -118,12 +120,15 @@ final class WordsBar: UIView, UITextFieldDelegate {
         send.frame = CGRect(x: bounds.width - h, y: 0, width: h, height: h)
         capsule.frame = CGRect(x: 0, y: 0, width: bounds.width - (sends ? h + 8 : 0), height: h)
         Chrome.round(capsule)
-        var x: CGFloat = 6
+        // Each symbol its own width and the same room round it: a wide one (a picture with its badge) doesn't run
+        // into the words, a narrow one (sparkles) isn't left in a gap.
+        var x: CGFloat = 10
         for button in [suggest, attach] where !button.isHidden {
-            button.frame = CGRect(x: x, y: 0, width: 36, height: h)
-            x += 36
+            let w = ceil(button.intrinsicContentSize.width) + 12
+            button.frame = CGRect(x: x, y: 0, width: w, height: h)
+            x += w
         }
-        if x == 6 { x = 18 }
+        x = x == 10 ? 18 : x + 6
         var right = capsule.bounds.width - (clear.isHidden ? 16 : 40)
         clear.frame = CGRect(x: capsule.bounds.width - 40, y: 0, width: 36, height: h)
         if !price.isHidden {

@@ -18,17 +18,21 @@ public struct HangarJob: Sendable {
     /// Whether what it makes is more takes of the edit's last step (asked again, the same way) rather than a step of
     /// its own: it's given the picture before that step, and its takes go after that step's, the first of them used.
     public var addsTakes: Bool
+    /// The edit's geometry, for a job given the picture as it shapes it (cropped, straightened, tilted; not turned
+    /// or flipped): what it makes `replaces` the picture, and the geometry goes but for its turns and flip.
+    public var shaped: HangarGeometry?
     /// What it makes from the picture. Off the main thread; cancelled if the editor's Cancel is tapped.
     public var make: @Sendable (_ picture: CGImage) async throws -> HangarMade
 
     public init(tool: String, name: String, region: CGRect? = nil, longestSide: CGFloat? = nil, parameters: HangarValue? = nil,
-                addsTakes: Bool = false, make: @escaping @Sendable (_ picture: CGImage) async throws -> HangarMade) {
+                addsTakes: Bool = false, shaped: HangarGeometry? = nil, make: @escaping @Sendable (_ picture: CGImage) async throws -> HangarMade) {
         self.tool = tool
         self.name = name
         self.region = region
         self.longestSide = longestSide
         self.parameters = parameters
         self.addsTakes = addsTakes
+        self.shaped = shaped
         self.make = make
     }
 }

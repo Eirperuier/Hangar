@@ -48,7 +48,7 @@ public final class HangarCropModule: HangarModule {
     public var ownsTopBar: Bool { true }
     /// Photos' iPad shows no mode's name in Crop's top bar (RESET is there).
     public var showsTitle: Bool { false }
-    public var pictureFrame: CGRect? { isChosen ? stage.box : nil }
+    public var pictureFrame: CGRect? { isChosen && !stage.isHidden && stage.alpha > 0 ? stage.box : nil }
     public var chrome: [UIView] { cropChrome }
 
     /// Straighten, Vertical and Horizontal: their ids, names, symbols and degrees at the ends of their rulers.
