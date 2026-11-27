@@ -1,7 +1,8 @@
 import Foundation
 
 /// What's been done to a picture: its crop and the rest of its geometry, a value for each adjustment, a filter and how
-/// much of it, what an app's own modes keep; and the steps made of pixels (`HangarStep`), by their pictures' ids. The
+/// much of it, what's drawn on it, what an app's own modes keep; and the steps made of pixels (`HangarStep`), by their
+/// pictures' ids. The
 /// picture is drawn from it each time (`HangarRenderer`), so an edit can be changed later, undone a step at a time,
 /// kept beside the original and opened again, as Photos keeps its edits.
 public struct HangarEdit: Hashable, Sendable, Codable {
@@ -20,9 +21,12 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     public var steps: [HangarStep]
     /// What an app's own modes keep, by the mode's id: theirs to read (`HangarValue.decoded(as:)`).
     public var modules: [String: HangarValue]
+    /// What's drawn on the picture (Markup's): over it as it's shown, on the part it was drawn on.
+    public var drawing: HangarDrawing
 
     public init(adjustments: [String: Double] = [:], switchedOff: Set<String> = [], filter: String? = nil, filterAmount: Double = 1,
-                geometry: HangarGeometry = .identity, steps: [HangarStep] = [], modules: [String: HangarValue] = [:]) {
+                geometry: HangarGeometry = .identity, steps: [HangarStep] = [], modules: [String: HangarValue] = [:],
+                drawing: HangarDrawing = HangarDrawing()) {
         self.adjustments = adjustments
         self.switchedOff = switchedOff
         self.filter = filter
@@ -30,19 +34,23 @@ public struct HangarEdit: Hashable, Sendable, Codable {
         self.geometry = geometry
         self.steps = steps
         self.modules = modules
+        self.drawing = drawing
     }
 
     /// A step added after the others. One that makes the picture larger (its frame past the picture's edges) keeps
-    /// the crop on the same part of it; one that makes a part of it the whole picture lets the crop go (the part
-    /// is what's kept now), its shape with it.
-    public mutating func add(_ step: HangarStep) {
+    /// the crop and what's drawn on the same part of it (as wide on it, if the picture's `aspect` before, its width
+    /// for each of its height, is known); one that makes a part of it the whole picture lets the crop go (the part
+    /// is what's kept now), its shape with it, and what was drawn on the picture it was.
+    public mutating func add(_ step: HangarStep, aspect: CGFloat? = nil) {
         steps.append(step)
         if step.replaces {
             geometry.crop = nil
             geometry.aspect = nil
+            drawing = HangarDrawing()
             return
         }
         let reach = step.reach
+        drawing.reach(reach, aspect: aspect)
         guard reach != HangarStep.whole, let crop = geometry.crop else { return }
         geometry.crop = CGRect(x: (crop.minX - reach.minX) / reach.width, y: (crop.minY - reach.minY) / reach.height,
                                width: crop.width / reach.width, height: crop.height / reach.height)
@@ -71,12 +79,12 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     /// Whether it changes nothing: the original as it was.
     public var isOriginal: Bool {
         !adjustments.keys.contains(where: applies) && (filter == nil || filterAmount == 0) && appliedGeometry.isIdentity
-            && steps.isEmpty
+            && steps.isEmpty && drawing.isEmpty
     }
 
     // An edit kept by an older version opens in a newer one: whatever it lacks is untouched.
     private enum CodingKeys: String, CodingKey {
-        case adjustments, switchedOff, filter, filterAmount, geometry, steps, modules
+        case adjustments, switchedOff, filter, filterAmount, geometry, steps, modules, drawing
     }
 
     public init(from decoder: any Decoder) throws {
@@ -88,5 +96,6 @@ public struct HangarEdit: Hashable, Sendable, Codable {
         geometry = try container.decodeIfPresent(HangarGeometry.self, forKey: .geometry) ?? .identity
         steps = try container.decodeIfPresent([HangarStep].self, forKey: .steps) ?? []
         modules = try container.decodeIfPresent([String: HangarValue].self, forKey: .modules) ?? [:]
+        drawing = try container.decodeIfPresent(HangarDrawing.self, forKey: .drawing) ?? HangarDrawing()
     }
 }

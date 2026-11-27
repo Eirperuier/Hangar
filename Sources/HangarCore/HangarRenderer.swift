@@ -3,8 +3,8 @@ import CoreImage
 import Foundation
 
 /// Draws a picture from an edit: its steps' pictures (`HangarStep`, from `assets`), its geometry (the crop, turned
-/// and flipped), then every adjustment that applies, in the toolbox's order, then the filter as much as its amount.
-/// Any thread.
+/// and flipped), then every adjustment that applies, in the toolbox's order, then the filter as much as its amount,
+/// then what's drawn on it (`HangarDrawing`, shaped as the picture is). Any thread.
 public struct HangarRenderer: Sendable {
     public var toolbox: HangarToolbox
     /// Where the steps' pictures are kept: without it, steps are left out.
@@ -87,9 +87,19 @@ public struct HangarRenderer: Sendable {
         let shaped = shape(edit, source)
         // Auto reads the whole picture, as the editor's does.
         let context = HangarRenderContext(source: source).resized(to: shaped, scale: 1)
-        let output = apply(edit, to: shaped, context: context)
+        var output = apply(edit, to: shaped, context: context)
+        if let marks = marks(edit, size: source.extent.size) { output = marks.composited(over: output).cropped(to: shaped.extent) }
         let space = picture.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
         return Self.context.createCGImage(output, from: shaped.extent, format: .RGBA8, colorSpace: space)
+    }
+
+    /// What's drawn on the picture, on a clear one the size of the steps' (`base`, in pixels), shaped by the edit's
+    /// geometry as the picture is (`shape`): to lay over the picture shaped and adjusted. Nil if nothing's drawn.
+    public func marks(_ edit: HangarEdit, size: CGSize) -> CIImage? {
+        guard let layer = edit.drawing.image(size: size) else { return nil }
+        let image = CIImage(cgImage: layer)
+        // The layer's own pixels, not rounded to its size: the picture's shape is cut for the picture's.
+        return shape(edit, image.transformed(by: CGAffineTransform(scaleX: size.width / image.extent.width, y: size.height / image.extent.height)))
     }
 
     /// The picture with the edit's geometry: cropped, turned and flipped, its corner at the origin.

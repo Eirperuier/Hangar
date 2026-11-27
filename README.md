@@ -140,6 +140,31 @@ glow.work(.painted)                              // lit while something works th
 
 The example's tools are all made on the device (a fill from round the paint, colours named in the words, the text written over the colour round it, the same camera and light the tools show, a part enlarged), so every tool can be tried; a model does far better.
 
+## Drawing
+
+`HangarMarkupModule()` is a mode for drawing on the picture: a pen, a shape (line, arrow, rectangle, ellipse, triangle, diamond, star, heart; the shape button, tapped again, opens them), the eraser, nine colours and a well for any other, and a width on the ruler (the pen and shapes one, the eraser its own). Each mark is an undo step; the bars go while a finger draws.
+
+What's drawn is part of the edit (`edit.drawing`, a `HangarDrawing`): values, like the rest of it. It's drawn over the picture as the edit shows it, after its adjustments and filter (a red arrow stays red under a filter), and it's on the picture under the crop: a crop, a turn or a flip later keeps each mark on what it was drawn on, and Crop shows it as it moves. The eraser takes out what's drawn, never the picture. A picture made larger (Extend) keeps the marks on the same part of it; a part made the whole picture (Close-Up) lets them go.
+
+A drawing is kept as a list of marks, each a stroke as the web canvas keeps one with what it is beside it, so the same JSON draws the same thing anywhere:
+
+```json
+{"marks": [
+  {"kind": "pen",       "points": [{"x": 0.20, "y": 0.35}, {"x": 0.31, "y": 0.42}, {"x": 0.45, "y": 0.44}], "widthRatio": 0.012, "color": "#FFFFFF"},
+  {"kind": "arrow",     "points": [{"x": 0.22, "y": 0.80}, {"x": 0.70, "y": 0.30}], "widthRatio": 0.012, "color": "#FF3B30"},
+  {"kind": "star",      "points": [{"x": 0.60, "y": 0.10}, {"x": 0.85, "y": 0.45}], "widthRatio": 0.008, "color": "#FFCC00"},
+  {"kind": "rectangle", "points": [{"x": 0.10, "y": 0.90}, {"x": 0.10, "y": 0.60}, {"x": 0.40, "y": 0.90}], "widthRatio": 0.008, "color": "#34C759"},
+  {"kind": "eraser",    "points": [{"x": 0.38, "y": 0.30}, {"x": 0.40, "y": 0.55}], "widthRatio": 0.036}
+]}
+```
+
+- `points` are 0 to 1 each way from the picture's top left; `widthRatio` is the line's width as a share of the picture's shorter side; `color` is `#RRGGBB` (`#RGB` and `#RRGGBBAA` read too, either case; white if there's none). A mark with no `kind` is a pen's, so a stroke the web sends for a painted edit is a drawing's mark as it is; a `kind` it doesn't know is drawn as a pen's line through its points.
+- `pen`, `eraser`: a line through the points in order (one point is a dot). `line`, `arrow`: its two ends; the arrow's head at the second, two lines 30° each side of the arrow, 4 widths long (no more than 45% of it).
+- The shapes fill a box: two opposite corners (the box upright on the picture), or its top left, top right and bottom left (a box drawn upright on a picture shown turned or straightened: the shape stays upright as it was drawn). In the box, 0 to 1 each way: a rectangle its edges, an ellipse inside them, a triangle (½, 0) (1, 1) (0, 1), a diamond the edges' middles, a five-pointed star its points on the ellipse (the first at the top, the corners between them 0.382 of the way in), a heart as `HangarMark.heartCurves` go. A box with no size, or a line with no length, draws nothing.
+- Lines have round ends and corners. Marks are drawn in order on a clear layer; the eraser clears that layer (a canvas's `destination-out`), and the layer goes over the picture.
+
+`HangarMark.outline(size:)` is where each kind's lines are worked out, for a picture of a size; `HangarDrawing.image(size:)` draws the layer, `draw(in:size:scale:place:)` into a context of your own (each point placed where you show it), and `HangarRenderer.marks(_:size:)` gives it shaped by the edit's geometry, as `render` lays it.
+
 ## Your own look
 
 Everything the editor draws is from a `HangarStyle`: Photos' by default, following the device's light and dark. Give it your design's tokens for its roles:

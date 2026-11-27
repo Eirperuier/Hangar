@@ -308,7 +308,9 @@ public final class HangarCropModule: HangarModule {
         if stagePictureFor == tones, let image = stage.image { return done(image) }
         let renderer = h.renderer
         Task.detached(priority: .userInitiated) {
-            let out = renderer.apply(tones, to: preview, context: previewContext)
+            var out = renderer.apply(tones, to: preview, context: previewContext)
+            // What's drawn on it, moving with it.
+            if let marks = renderer.marks(tones, size: preview.extent.size) { out = marks.composited(over: out).cropped(to: preview.extent) }
             guard let picture = HangarRenderer.context.createCGImage(out, from: preview.extent, format: .RGBA8,
                                                                      colorSpace: CGColorSpace(name: CGColorSpace.displayP3)) else { return }
             await MainActor.run { [weak self] in

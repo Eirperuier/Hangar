@@ -108,6 +108,11 @@ public final class HangarEditor: UIViewController, HangarHost {
     public var overlay: (@Sendable (CIImage, HangarRenderContext) -> CIImage)? {
         didSet { if isViewLoaded { render() } }
     }
+    public var showsDrawing = true {
+        didSet { if isViewLoaded, showsDrawing != oldValue { render() } }
+    }
+    /// What's drawn on the picture, at the canvas's pixels, for the drawing, geometry and size it was drawn for.
+    private var shownMarks: (drawing: HangarDrawing, geometry: HangarGeometry, size: CGSize, image: CIImage?)?
 
     private let backdrop = UIView()
     private let canvas = CanvasView()
@@ -575,11 +580,24 @@ public final class HangarEditor: UIViewController, HangarHost {
         guard let shown else { return }
         let (renderer, edit, comparing, overlay) = (renderer, edit, comparing, overlay)
         let plain = comparing ? plainShown() : nil
+        let marks = showsDrawing && !comparing ? marksShown(size: shown.image.extent.size) : nil
         canvas.show {
             guard !comparing else { return plain ?? shown.image }
-            let out = renderer.apply(edit, to: shown.image, context: shown.context)
+            var out = renderer.apply(edit, to: shown.image, context: shown.context)
+            if let marks { out = marks.composited(over: out).cropped(to: shown.image.extent) }
             return overlay.map { $0(out, shown.context) } ?? out
         }
+    }
+
+    /// What's drawn on the picture, at the canvas's pixels (`size`), as Markup draws it: drawn again only when the
+    /// drawing, the geometry or the size changes.
+    private func marksShown(size: CGSize) -> CIImage? {
+        guard !edit.drawing.isEmpty, let base = preview?.extent.size else { return nil }
+        let g = edit.appliedGeometry
+        if let shownMarks, shownMarks.drawing == edit.drawing, shownMarks.geometry == g, shownMarks.size == size { return shownMarks.image }
+        let image = edit.drawing.shownImage(base: base, geometry: g, size: size).map { CIImage(cgImage: $0) }
+        shownMarks = (edit.drawing, g, size, image)
+        return image
     }
 
     /// The picture as it was before the edit's steps, shaped and sized as the canvas shows the edit: while a finger's
@@ -605,7 +623,8 @@ public final class HangarEditor: UIViewController, HangarHost {
         }
         guard let (preview, previewContext) = base else { return original }
         let shapedPreview = renderer.shape(edit, preview)
-        let out = renderer.apply(edit, to: shapedPreview, context: previewContext.resized(to: shapedPreview, scale: previewContext.scale))
+        var out = renderer.apply(edit, to: shapedPreview, context: previewContext.resized(to: shapedPreview, scale: previewContext.scale))
+        if let marks = renderer.marks(edit, size: preview.extent.size) { out = marks.composited(over: out).cropped(to: shapedPreview.extent) }
         guard let picture = HangarRenderer.context.createCGImage(out, from: shapedPreview.extent, format: .RGBA8,
                                                                  colorSpace: CGColorSpace(name: CGColorSpace.displayP3)) else { return original }
         return UIImage(cgImage: picture)
@@ -833,7 +852,7 @@ public final class HangarEditor: UIViewController, HangarHost {
                     self.edit.steps[last].take = self.edit.steps[last].takes.count
                     self.edit.steps[last].takes += step.takes
                 } else {
-                    self.edit.add(step)
+                    self.edit.add(step, aspect: self.preview.map { $0.extent.width / max($0.extent.height, 1) })
                     if job.shaped != nil {
                         // What it made is the picture as the geometry shaped it: only its turns and flip are left.
                         self.edit.geometry = HangarGeometry(turns: self.edit.geometry.turns, flipped: self.edit.geometry.flipped)

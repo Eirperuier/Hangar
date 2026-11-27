@@ -153,6 +153,9 @@ public protocol HangarHost: AnyObject {
     /// Something drawn over the edit on the canvas while a mode wants it (a preview of what it's about to do); nil
     /// for nothing. Any thread.
     var overlay: (@Sendable (CIImage, HangarRenderContext) -> CIImage)? { get set }
+    /// Whether the canvas draws what's drawn on the picture (`HangarEdit.drawing`): not while a mode draws it itself
+    /// (Markup, its eraser taking out what's under it).
+    var showsDrawing: Bool { get set }
     /// The picture before the edit's steps, the same size as `base`: what a finger held on the picture shows (nil
     /// if a step made the picture another size).
     var plain: CIImage? { get }

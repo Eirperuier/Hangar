@@ -161,6 +161,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let page = preview.page
         let editor = HangarEditor(image: photo.original, edit: edit ?? photo.edit, modules: [
             HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(), HangarToolsModule(tools: HangarTool.local),
+            HangarMarkupModule(),
         ])
         editor.mode = mode
         // The app's own: in More, after Photos'.
