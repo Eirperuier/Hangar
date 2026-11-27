@@ -2,11 +2,12 @@ import HangarCore
 import UIKit
 
 /// The picture as the Tools mode shows it: the edit drawn whole, painted on with one finger, pinched and moved with
-/// two (Photos' Clean Up: "Pinch to pan and zoom"), the original under a finger held still. Its strokes are in the
-/// shown picture's pixels (`picture`), from its top left; the mode takes them back to the picture under the edit's
-/// geometry.
+/// two (Photos' Clean Up: "Pinch to pan and zoom"), the original under a finger held still; what a tool marks on it
+/// (`marks`, zoomed with it), and what a tool would make of it, shown in its place as it's set (`preview`). Its
+/// strokes and taps are in the shown picture's pixels (`picture`), from its top left; the mode takes them back to the
+/// picture under the edit's geometry.
 @MainActor
-final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     /// A stroke as it's drawn: its points in the shown picture's pixels, and how wide, in them.
     struct Line {
         var points: [CGPoint]
@@ -22,6 +23,18 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
     var onStroke: ((Line) -> Void)?
     /// Whether it takes a finger to paint.
     var paints = true
+    /// Where a finger tapped, while it doesn't paint (a tool choosing something on the picture).
+    var onTap: ((CGPoint) -> Void)?
+    /// Whether two fingers zoom and move it.
+    var zooms = true {
+        didSet {
+            scroll.pinchGestureRecognizer?.isEnabled = zooms
+            scroll.panGestureRecognizer.isEnabled = zooms
+            if !zooms, scroll.zoomScale != 1 { unzoom(animated: true) }
+        }
+    }
+    /// Over the picture, zoomed with it, its points the picture's (`pointsPerPixel` of its pixels).
+    let marks = UIView()
 
     private let scroll = UIScrollView()
     private let picture = UIImageView()
@@ -60,6 +73,8 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
         paint.lineCap = .round
         paint.lineJoin = .round
         picture.layer.addSublayer(paint)
+        marks.isUserInteractionEnabled = false
+        picture.addSubview(marks)
         cursor.fillColor = UIColor.white.withAlphaComponent(0.25).cgColor
         cursor.strokeColor = UIColor.white.withAlphaComponent(0.9).cgColor
         cursor.lineWidth = 1.5
@@ -86,7 +101,7 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
         isAccessibilityElement = false
         picture.isAccessibilityElement = true
         picture.accessibilityTraits = [.image, .allowsDirectInteraction]
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (stage: BrushStage, _) in stage.drawLines() }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (stage: ToolStage, _) in stage.drawLines() }
     }
 
     @available(*, unavailable)
@@ -99,6 +114,7 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
         pixels = size
         shown = UIImage(cgImage: image)
         self.original = original.map { UIImage(cgImage: $0) }
+        previewing = nil
         picture.image = shown
         if resized {
             lines = []
@@ -108,6 +124,16 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
     }
 
     var hasPicture: Bool { shown != nil }
+    /// The shown picture's pixels, and the picture's points a pixel as it's laid out unzoomed.
+    var pixelSize: CGSize { pixels }
+    var pointsPerPixel: CGFloat { picture.bounds.width / max(pixels.width, 1) }
+    /// The shown picture, as a tool would make it (nil: as it is).
+    func preview(_ image: CGImage?) {
+        previewing = image.map { UIImage(cgImage: $0) }
+        picture.image = previewing ?? shown
+    }
+
+    private var previewing: UIImage?
 
     /// Where the picture is, in `view`'s coordinates.
     func pictureFrame(in view: UIView) -> CGRect {
@@ -127,6 +153,7 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
         scroll.frame = region
         scroll.contentSize = fitted.size
         picture.frame = CGRect(origin: .zero, size: fitted.size)
+        marks.frame = picture.bounds
         centre()
         scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: -scroll.contentInset.top)
         drawLines()
@@ -181,7 +208,7 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
     }
 
     @objc private func tapped(_ tap: UITapGestureRecognizer) {
-        guard paints else { return }
+        guard paints else { return onTap?(pixel(tap.location(in: picture))) ?? () }
         onBegin?()
         drawing = Line(points: [pixel(tap.location(in: picture))], width: widthInPixels)
         finishLine()
@@ -270,8 +297,9 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
 
     /// The picture before the edit's steps, or the edit again.
     func showOriginal(_ on: Bool) {
-        picture.image = on ? original ?? shown : shown
+        picture.image = on ? original ?? shown : previewing ?? shown
         paint.isHidden = on
+        marks.isHidden = on
     }
 
     // MARK: Fingers
@@ -288,7 +316,8 @@ final class BrushStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegat
     }
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        if g is UIPanGestureRecognizer || g is UITapGestureRecognizer { return paints }
+        if g is UITapGestureRecognizer { return paints || onTap != nil }
+        if g is UIPanGestureRecognizer, g.view === picture { return paints }
         return true
     }
 }

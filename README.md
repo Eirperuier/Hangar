@@ -16,7 +16,7 @@ Hangar is built on [Flight](https://github.com/Eirperuier/Flight): the picture f
 | Adjust | Auto, Exposure, Brilliance, Highlights, Shadows, Contrast, Brightness, Black Point, Saturation, Vibrance, Warmth, Tint, Sharpness, Definition, Noise Reduction, Vignette |
 | Filters | Vivid, Vivid Warm, Vivid Cool, Dramatic, Dramatic Warm, Dramatic Cool, Mono, Silvertone, Noir, each with how much |
 | Crop | the box's corners and edges, the picture dragged and pinched under it; Straighten, Vertical, Horizontal; Flip, Rotate; Aspect Ratio (Original, Freeform, Square, Wallpaper, 16:9 to 3:2, upright or level, locked); Reset |
-| Tools | brushes over the picture: Clean Up (what's painted taken out) and the app's own, such as an edit of a part of the picture in words; pinch to zoom, hold for the original |
+| Tools | the app's tools that have a picture made again: Clean Up (what's painted taken out), an edit in words (of a part painted, or all of it), the text changed, Extend (more round it), Reframe (a new camera angle), a light, a Close-Up; each step's takes over the picture, another asked for, the one used chosen |
 | ··· | Copy Edits, Paste Edits, Lock Aspect Ratio, Revert to Original |
 
 Video (trimming, and every tool on a clip) comes next.
@@ -91,25 +91,43 @@ editor.actions = [HangarAction(title: "Upscale", symbol: "arrow.up.left.and.arro
 
 A step's pictures are kept by the app (`HangarAssets`: a folder by default, your storage or server if you like); the edit keeps only their ids. A step is laid over the picture before it where its frame says (more round it for a picture made larger) and as much as its mask says, and the crop, adjustments and filter are drawn on top, so they stay values: change Exposure after the background's gone, and the background stays gone. The example's Remove Background (Vision) is made this way.
 
-## Brushes
+## Tools
 
-Photos' Tools (iOS 27) is brushes: paint over something and it's made again, only the painted part kept. Hangar has the mode and its brushes' handling, not what makes their pictures: that's your model, or something on the device. Give the editor a Tools mode with yours:
+Photos' Tools (iOS 27) asks something of the picture and has it made again: paint over something and it's taken out, pull the frame past the edges and more of the scene is drawn, move the camera and it's seen from there. Hangar has the mode and each tool's handling, not what makes their pictures: that's your model, or something on the device. Give the editor a Tools mode with yours:
 
 ```swift
-let cleanUp = HangarBrush.cleanUp(longestSide: 2048) { request in
+let cleanUp = HangarTool.cleanUp(price: "2 credits", longestSide: 2048) { request in
     // request.picture: the picture as the edit's steps make it; request.mask: white where it was painted;
     // request.marked: the picture with the paint on it, for a model that reads marks.
     [try await server.erase(request.marked, prompt: "Remove the area marked by the translucent blue brush strokes…")]
 }
-let edit = HangarBrush(id: "edit", name: "Edit", symbol: "paintbrush.pointed", hint: "Brush over what to change, then say how.",
-                       working: "Editing…", words: HangarWords(placeholder: "Describe the change")) { request in
-    [try await server.edit(request.marked, request.picture, prompt: request.words ?? "")]
+let edit = HangarTool.edit(price: "4 credits", pickReference: pickFromLibrary) { request in
+    // request.words, request.references; request.mask nil if nothing was painted (the whole picture).
+    [try await server.edit(request.picture, marked: request.marked, references: request.references.map(\.picture), prompt: request.words ?? "")]
+}
+let extend = HangarTool.extend { request in
+    // request.canvas: the picture on a canvas out to request.frame, grey round it; request.mask: white what's to be drawn.
+    [try await server.outpaint(request.canvas!, mask: request.mask!)]
 }
 let editor = HangarEditor(image: image, modules: [HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(),
-                                                  HangarToolsModule(brushes: [cleanUp, edit])])
+                                                  HangarToolsModule(tools: [cleanUp, edit, extend])])
 ```
 
-Clean Up works as the finger lifts; a brush with `words` gathers strokes until they're sent with what's to be done. A model may redraw the whole picture: Hangar keeps only the painted part (2% wider, its edge feathered), meets its tones to the picture's round it (so a model's cast over everything leaves no seam), and refuses one that came back another shape. The strokes are kept with the step, as values on the picture under the crop, so the crop, adjustments and filter can still change after. The example's Clean Up fills from round the paint on the device; a model does far better.
+| Tool | What's asked | What's laid back |
+|---|---|---|
+| `cleanUp` | painted; works as the finger lifts | only the painted part, its tones met to the picture's |
+| `edit` | words, pictures to go by, a part painted or not | the painted part as Clean Up's; all of it if nothing was |
+| `text` | the text Vision finds, each box tapped and said again | only the boxes, tones met |
+| `extend` | a frame pulled out past the picture (or a shape chosen), words if it asks | the picture's own pixels kept, what's round it met to them; the picture larger |
+| `reframe` | one finger turns and tilts the camera, two move, zoom and roll it; shown as it's set (`HangarReframe`) | all of it |
+| `light` | a light dragged into place, its brightness, warmth, strength and rim; shown as it's set (`HangarRelight`) | all of it |
+| `closeUp` | a box over a part | that part, the whole picture from then on (the crop let go) |
+
+A model may redraw the whole picture: where only a part was asked, Hangar keeps that part (2% wider, its edge feathered), meets its tones to the picture's round it (so a model's cast over everything leaves no seam), and refuses one that came back another shape; a whole picture that comes back another shape is cut to the picture's. What was asked is kept with the step, as values on the picture under the crop, so the crop, adjustments and filter can still change after.
+
+Once a step's made, its takes show over the picture: Again asks for another the same way (up to 8), the arrows choose the one used (each an undo step), and ⋯ lays it only where it was asked or whole, and shows what's kept. A tool's price, if the app gives one, shows after its name or on its button; an action's in More, under its title. An action can be a choice of jobs (`HangarAction(title:symbol:choices:)`, as Upscale's 2K, 4K and 8K).
+
+The example's tools are all made on the device (a fill from round the paint, colours named in the words, the text written over the colour round it, the same camera and light the tools show, a part enlarged), so every tool can be tried; a model does far better.
 
 ## Your own look
 

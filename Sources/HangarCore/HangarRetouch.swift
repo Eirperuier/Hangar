@@ -26,29 +26,111 @@ public struct HangarStroke: Hashable, Sendable, Codable {
     }
 }
 
-/// What a brush asks of whatever makes its pictures (a model on a server, something on the device): the picture as
-/// the edit's steps make it, where it was painted (a mask: white painted, black not, the picture's size), the
-/// picture with the paint on it as it was shown (for a model that reads marks drawn on a picture), the strokes
-/// themselves, and the words, for a brush that asks for them.
-public struct HangarBrushRequest: @unchecked Sendable {
+/// A picture an app gives a tool to go by (a product to put in, a style to take), with its id in the app's store,
+/// so the step can say which it was.
+public struct HangarReference: @unchecked Sendable {
+    public var id: String
+    public var picture: CGImage
+
+    public init(id: String, picture: CGImage) {
+        self.id = id
+        self.picture = picture
+    }
+}
+
+/// Text found on a picture, and what it's to say instead: where it is, 0 to 1 each way from the picture's top left.
+public struct HangarTextChange: Hashable, Sendable, Codable {
+    public var box: CGRect
+    public var from: String
+    public var to: String
+
+    public init(box: CGRect, from: String, to: String) {
+        self.box = box
+        self.from = from
+        self.to = to
+    }
+}
+
+/// What a tool asks of whatever makes its pictures (a model on a server, something on the device): the picture as
+/// the edit's steps make it, and what was asked of it, as much as the tool asks. Where it's to change, if only a part
+/// is (`mask`: white there, black not, the picture's size): what was painted (`strokes`, and the picture with the
+/// paint on it as it was shown, `marked`, for a model that reads marks drawn on a picture), or the boxes of text to
+/// say something else (`texts`). Words, and pictures to go by (`references`). More of the scene round it (`frame`,
+/// and the picture on a canvas that size, `canvas`, where `mask` is white what's to be drawn). A part to make the
+/// whole picture (`region`, `part`). Values set on the picture (a new camera angle, a light: `values`).
+public struct HangarToolRequest: @unchecked Sendable {
     public let picture: CGImage
-    public let mask: CGImage
-    public let marked: CGImage
+    public let mask: CGImage?
+    public let marked: CGImage?
     public let strokes: [HangarStroke]
     public let words: String?
+    public let references: [HangarReference]
+    public let texts: [HangarTextChange]
+    /// The picture's new edges, it being 0 to 1 each way: past them, to be drawn.
+    public let frame: CGRect?
+    public let canvas: CGImage?
+    /// The part to be made the whole picture, 0 to 1 each way from its top left, and that part.
+    public let region: CGRect?
+    public let part: CGImage?
+    public let values: [String: Double]
 
-    /// The request for `strokes` over `picture`, the marked picture's paint `mark`'s colour (see through it as
-    /// much as its alpha says) outlined in white, as Flowith's draw-area edit marks a picture for its model.
-    public init(picture: CGImage, strokes: [HangarStroke], words: String? = nil, mark: CGColor = HangarRetouch.mark) throws {
-        guard !strokes.isEmpty else { throw HangarRetouchError.unpainted }
+    private init(picture: CGImage, mask: CGImage? = nil, marked: CGImage? = nil, strokes: [HangarStroke] = [], words: String? = nil,
+                 references: [HangarReference] = [], texts: [HangarTextChange] = [], frame: CGRect? = nil, canvas: CGImage? = nil,
+                 region: CGRect? = nil, part: CGImage? = nil, values: [String: Double] = [:]) {
         self.picture = picture
+        self.mask = mask
+        self.marked = marked
         self.strokes = strokes
         self.words = words
+        self.references = references
+        self.texts = texts
+        self.frame = frame
+        self.canvas = canvas
+        self.region = region
+        self.part = part
+        self.values = values
+    }
+
+    /// `strokes` over `picture` (none: all of it), the marked picture's paint `mark`'s colour (see through it as much
+    /// as its alpha says) outlined in white, as Flowith's draw-area edit marks a picture for its model.
+    public static func painted(_ picture: CGImage, strokes: [HangarStroke], words: String? = nil, references: [HangarReference] = [],
+                               mark: CGColor = HangarRetouch.mark) throws -> HangarToolRequest {
+        guard !strokes.isEmpty else { return HangarToolRequest(picture: picture, words: words, references: references) }
         let size = CGSize(width: picture.width, height: picture.height)
         guard let mask = HangarRetouch.mask(strokes, size: size),
               let marked = HangarRetouch.marked(picture, strokes, mark: mark) else { throw HangarRetouchError.unpainted }
-        self.mask = mask
-        self.marked = marked
+        return HangarToolRequest(picture: picture, mask: mask, marked: marked, strokes: strokes, words: words, references: references)
+    }
+
+    /// The text in `texts`' boxes to say what they say instead; `mask` the boxes.
+    public static func text(_ picture: CGImage, changes texts: [HangarTextChange]) throws -> HangarToolRequest {
+        guard !texts.isEmpty, let mask = HangarRetouch.mask(boxes: texts.map(\.box), size: CGSize(width: picture.width, height: picture.height))
+        else { throw HangarRetouchError.unpainted }
+        return HangarToolRequest(picture: picture, mask: mask, words: nil, texts: texts)
+    }
+
+    /// More of the scene round `picture`, out to `frame`: the picture on a canvas that size, grey round it (as
+    /// Flowith gives its model one to draw on), `mask` white where it's grey.
+    public static func extend(_ picture: CGImage, to frame: CGRect, words: String? = nil) throws -> HangarToolRequest {
+        let size = CGSize(width: picture.width, height: picture.height)
+        guard frame.contains(HangarStep.whole.insetBy(dx: 1e-6, dy: 1e-6)), frame != HangarStep.whole,
+              let laid = HangarRetouch.canvas(picture, frame: frame), let mask = HangarRetouch.mask(around: size, frame: frame, feather: 0)
+        else { throw HangarRetouchError.unpainted }
+        return HangarToolRequest(picture: picture, mask: mask, words: words, frame: frame, canvas: laid)
+    }
+
+    /// `region` of `picture` to be made the whole picture.
+    public static func part(_ picture: CGImage, region: CGRect, words: String? = nil) throws -> HangarToolRequest {
+        let w = CGFloat(picture.width), h = CGFloat(picture.height)
+        let pixels = CGRect(x: region.minX * w, y: region.minY * h, width: region.width * w, height: region.height * h).integral
+            .intersection(CGRect(x: 0, y: 0, width: w, height: h))
+        guard !pixels.isEmpty, let part = picture.cropping(to: pixels) else { throw HangarRetouchError.unpainted }
+        return HangarToolRequest(picture: picture, words: words, region: region, part: part)
+    }
+
+    /// The whole picture made again with `values` (`HangarReframe`'s, `HangarRelight`'s).
+    public static func values(_ picture: CGImage, _ values: [String: Double], words: String? = nil) -> HangarToolRequest {
+        HangarToolRequest(picture: picture, words: words, values: values)
     }
 }
 
@@ -63,7 +145,7 @@ public enum HangarRetouchError: LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .unpainted: "Brush over what you want to change first."
+        case .unpainted: "Show what you want to change first."
         case .reshaped: "This edit changed the shape of the picture, so it can’t be laid back over it."
         case .empty: "Nothing came back for this edit. Try again."
         }
@@ -95,6 +177,58 @@ public enum HangarRetouch {
         context.setFillColor(gray: 1, alpha: 1)
         context.setStrokeColor(gray: 1, alpha: 1)
         draw(strokes, in: context, size: CGSize(width: w, height: h), extra: 0)
+        return context.makeImage()
+    }
+
+    /// Boxes (0 to 1 each way from the top left) drawn white on black, `size` pixels.
+    public static func mask(boxes: [CGRect], size: CGSize) -> CGImage? {
+        let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+        guard w > 0, h > 0, let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        else { return nil }
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        context.setFillColor(gray: 1, alpha: 1)
+        for box in boxes {
+            // The context's y goes up.
+            context.fill(CGRect(x: box.minX * size.width, y: (1 - box.maxY) * size.height, width: box.width * size.width, height: box.height * size.height))
+        }
+        return context.makeImage()
+    }
+
+    /// A canvas `frame`'s size (a picture `size` being 0 to 1 each way in it), white round the picture and black on
+    /// it: what's to be drawn. Its edge fades `feather` (of the picture's shorter side) into the picture, where the
+    /// picture has more round it, so what's drawn meets the picture's pixels without a seam.
+    public static func mask(around size: CGSize, frame: CGRect, feather: CGFloat) -> CGImage? {
+        let canvas = CGSize(width: (frame.width * size.width).rounded(), height: (frame.height * size.height).rounded())
+        guard canvas.width > 0, canvas.height > 0 else { return nil }
+        // The picture on the canvas (Core Image's y going up).
+        let p = CGRect(x: -frame.minX * size.width, y: (frame.maxY - 1) * size.height, width: size.width, height: size.height)
+        let f = feather * min(size.width, size.height)
+        let far = 4 * f + 4
+        // The black inset by the fade on each side something's drawn past; past the canvas's edge where nothing is.
+        let inner = CGRect(x: p.minX > 0.5 ? p.minX + f : -far, y: p.minY > 0.5 ? p.minY + f : -far,
+                           width: 0, height: 0)
+        let maxX = p.maxX < canvas.width - 0.5 ? p.maxX - f : canvas.width + far
+        let maxY = p.maxY < canvas.height - 0.5 ? p.maxY - f : canvas.height + far
+        let black = CGRect(x: inner.minX, y: inner.minY, width: max(0, maxX - inner.minX), height: max(0, maxY - inner.minY))
+        let all = CGRect(origin: .zero, size: canvas)
+        var out = CIImage(color: .black).cropped(to: black).composited(over: CIImage(color: .white).cropped(to: all.insetBy(dx: -far, dy: -far)))
+        if f > 0 { out = out.applyingGaussianBlur(sigma: f / 3) }
+        return HangarRenderer.context.createCGImage(out.cropped(to: all), from: all, format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
+    }
+
+    /// The picture on a canvas `frame`'s size, mid grey round it.
+    static func canvas(_ picture: CGImage, frame: CGRect) -> CGImage? {
+        let w = CGFloat(picture.width), h = CGFloat(picture.height)
+        let size = CGSize(width: (frame.width * w).rounded(), height: (frame.height * h).rounded())
+        guard size.width > 0, size.height > 0, let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+                                                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.setFillColor(gray: 0.5, alpha: 1)
+        context.fill(CGRect(origin: .zero, size: size))
+        context.draw(picture, in: CGRect(x: -frame.minX * w, y: (frame.maxY - 1) * h, width: w, height: h))
         return context.makeImage()
     }
 
@@ -160,12 +294,12 @@ public enum HangarRetouch {
         return HangarRenderer.context.createCGImage(out, from: e, format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
     }
 
-    /// What was made from `request`'s picture, laid back over it: each take the picture's size (an error if it came
-    /// back another shape), its tones met to the picture's round the paint (`matchingTones`), kept only where the
-    /// paint was (`kept`).
-    public static func made(_ takes: [CGImage], for request: HangarBrushRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage) {
+    /// What was made from `request`'s picture, laid back over the part it asked to change (`request.mask`: what
+    /// was painted, the text's boxes): each take the picture's size (an error if it came back another shape), its
+    /// tones met to the picture's round that part (`matchingTones`), kept only there (`kept`).
+    public static func made(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage) {
         guard !takes.isEmpty else { throw HangarRetouchError.empty }
-        guard let mask = kept(request.mask) else { throw HangarRetouchError.unpainted }
+        guard let asked = request.mask, let mask = kept(asked) else { throw HangarRetouchError.unpainted }
         let picture = request.picture
         let size = CGSize(width: picture.width, height: picture.height)
         let original = CIImage(cgImage: picture)
@@ -178,6 +312,48 @@ public enum HangarRetouch {
             return made
         }
         return (out, mask)
+    }
+
+    /// What was made from `request`'s canvas (`HangarToolRequest.extend`), laid round the picture: each take the
+    /// canvas's size (an error if it came back another shape), the picture's own pixels kept on it, what's drawn
+    /// round it met to its tones (`matchingTones`). Its frame is the request's.
+    public static func extended(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage) {
+        guard !takes.isEmpty else { throw HangarRetouchError.empty }
+        let picture = request.picture
+        let size = CGSize(width: picture.width, height: picture.height)
+        guard let frame = request.frame, let mask = mask(around: size, frame: frame, feather: extendFeather) else { throw HangarRetouchError.unpainted }
+        let canvas = CGSize(width: mask.width, height: mask.height)
+        // The picture where it is on the canvas, clear round it.
+        let original = CIImage(cgImage: picture).transformed(by: CGAffineTransform(translationX: -frame.minX * size.width, y: (frame.maxY - 1) * size.height))
+            .composited(over: CIImage(color: .clear).cropped(to: CGRect(origin: .zero, size: canvas)))
+            .cropped(to: CGRect(origin: .zero, size: canvas))
+        let out = try takes.map { take -> CGImage in
+            var image = try fitted(take, to: canvas)
+            if matchingTones { image = matchTones(image, to: original, inside: CIImage(cgImage: mask)) }
+            guard let made = HangarRenderer.context.createCGImage(image, from: CGRect(origin: .zero, size: canvas), format: .RGBA8,
+                                                                  colorSpace: picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+            else { throw HangarRetouchError.empty }
+            return made
+        }
+        return (out, mask)
+    }
+
+    /// How far into the picture what's drawn round it fades, of its shorter side.
+    public static let extendFeather: CGFloat = 0.015
+
+    /// What was made to be the whole of a picture `size`'s shape (the picture made again, or a part made the whole of
+    /// it): each take at its own pixels, its middle cut to that shape if it came back another.
+    public static func shaped(_ takes: [CGImage], like size: CGSize) throws -> [CGImage] {
+        guard !takes.isEmpty else { throw HangarRetouchError.empty }
+        let aspect = size.width / max(size.height, 1)
+        return takes.map { take in
+            let w = CGFloat(take.width), h = CGFloat(take.height)
+            guard abs((w / h) / aspect - 1) > 0.002 else { return take }
+            let cut = w / h > aspect
+                ? CGRect(x: ((w - h * aspect) / 2).rounded(), y: 0, width: (h * aspect).rounded(), height: h)
+                : CGRect(x: 0, y: ((h - w / aspect) / 2).rounded(), width: w, height: (w / aspect).rounded())
+            return take.cropping(to: cut) ?? take
+        }
     }
 
     /// `take` scaled to `size`, if it's that shape.

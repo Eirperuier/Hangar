@@ -15,48 +15,68 @@ public struct HangarJob: Sendable {
     public var longestSide: CGFloat?
     /// What it was asked, kept in the step: to make it again, or open its mode as it was.
     public var parameters: HangarValue?
+    /// Whether what it makes is more takes of the edit's last step (asked again, the same way) rather than a step of
+    /// its own: it's given the picture before that step, and its takes go after that step's, the first of them used.
+    public var addsTakes: Bool
     /// What it makes from the picture. Off the main thread; cancelled if the editor's Cancel is tapped.
     public var make: @Sendable (_ picture: CGImage) async throws -> HangarMade
 
     public init(tool: String, name: String, region: CGRect? = nil, longestSide: CGFloat? = nil, parameters: HangarValue? = nil,
-                make: @escaping @Sendable (_ picture: CGImage) async throws -> HangarMade) {
+                addsTakes: Bool = false, make: @escaping @Sendable (_ picture: CGImage) async throws -> HangarMade) {
         self.tool = tool
         self.name = name
         self.region = region
         self.longestSide = longestSide
         self.parameters = parameters
+        self.addsTakes = addsTakes
         self.make = make
     }
 }
 
 /// What a job made: one picture or several takes of it (the first used), where it goes over the picture it was given
-/// (all of it, or more round it), and where it's kept (`HangarStep`).
+/// (all of it, or more round it), and where it's kept (`HangarStep`); or the picture from then on (`replaces`: a part
+/// made the whole of it).
 public struct HangarMade: Sendable {
     public var takes: [CGImage]
     public var frame: CGRect
     public var mask: CGImage?
+    public var replaces: Bool
 
-    public init(_ picture: CGImage, frame: CGRect = HangarStep.whole, mask: CGImage? = nil) {
-        self.init(takes: [picture], frame: frame, mask: mask)
+    public init(_ picture: CGImage, frame: CGRect = HangarStep.whole, mask: CGImage? = nil, replaces: Bool = false) {
+        self.init(takes: [picture], frame: frame, mask: mask, replaces: replaces)
     }
 
-    public init(takes: [CGImage], frame: CGRect = HangarStep.whole, mask: CGImage? = nil) {
+    public init(takes: [CGImage], frame: CGRect = HangarStep.whole, mask: CGImage? = nil, replaces: Bool = false) {
         self.takes = takes
         self.frame = frame
         self.mask = mask
+        self.replaces = replaces
     }
 }
 
-/// Something More offers that's a job and nothing else (Remove Background, Upscale): no mode of its own.
+/// Something More offers that's a job and nothing else (Remove Background, Upscale): no mode of its own. Its price,
+/// if the app asks one, under its title ("30 credits"); or a choice of jobs (Upscale's 2K, 4K and 8K), each an
+/// action, in a menu of their own.
 public struct HangarAction: Sendable {
     public var title: String
     public var symbol: String
-    public var job: HangarJob
+    public var price: String?
+    public var job: HangarJob?
+    public var choices: [HangarAction]
 
-    public init(title: String, symbol: String, job: HangarJob) {
+    public init(title: String, symbol: String, price: String? = nil, job: HangarJob) {
         self.title = title
         self.symbol = symbol
+        self.price = price
         self.job = job
+        choices = []
+    }
+
+    public init(title: String, symbol: String, choices: [HangarAction]) {
+        self.title = title
+        self.symbol = symbol
+        job = nil
+        self.choices = choices
     }
 }
 

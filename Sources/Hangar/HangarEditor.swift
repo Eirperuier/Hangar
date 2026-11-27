@@ -458,7 +458,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         guard let source, let start = place(of: source) else {
             UIView.animate(withDuration: 0.25) {
                 self.backdrop.alpha = 1
-                self.canvas.alpha = 1
+                self.canvas.alpha = self.canvasShown ? 1 : 0
             }
             showChrome()
             return
@@ -469,8 +469,9 @@ public final class HangarEditor: UIViewController, HangarHost {
         flyer.layer.cornerCurve = .continuous
         view.insertSubview(flyer, aboveSubview: canvas)
         self.flyer = flyer
-        let end = FlightPlace(frame: canvas.frame)
-        let piece = FlightPiece(view: flyer, from: start, target: { [weak self] in self.map { FlightPlace(frame: $0.canvas.frame) } }) { [weak self] place in
+        // To where the picture's shown: the canvas, or a mode's own place for it.
+        let end = FlightPlace(frame: current?.pictureFrame ?? canvas.frame)
+        let piece = FlightPiece(view: flyer, from: start, target: { [weak self] in self.map { FlightPlace(frame: $0.current?.pictureFrame ?? $0.canvas.frame) } }) { [weak self] place in
             // The page under it covered as the picture leaves its place, well before it lands.
             self?.backdrop.alpha = min(1, Self.progress(place, from: start, to: end) * 3)
         }
@@ -483,11 +484,17 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     private func landedIn() {
         backdrop.alpha = 1
-        canvas.alpha = 1
-        // The flying picture stays over the canvas until the canvas has drawn.
-        canvas.onFirstDraw = { [weak self] in
-            self?.flyer?.removeFromSuperview()
-            self?.flyer = nil
+        canvas.alpha = canvasShown ? 1 : 0
+        // The flying picture stays over the canvas until the canvas has drawn; a mode showing the picture itself
+        // has it already.
+        if canvasShown {
+            canvas.onFirstDraw = { [weak self] in
+                self?.flyer?.removeFromSuperview()
+                self?.flyer = nil
+            }
+        } else {
+            flyer?.removeFromSuperview()
+            flyer = nil
         }
         render()
         #if DEBUG
@@ -567,7 +574,7 @@ public final class HangarEditor: UIViewController, HangarHost {
     /// The picture as it was before the edit's steps, shaped and sized as the canvas shows the edit: while a finger's
     /// held on it. Nil if there are none, or one's made the picture another size.
     private func plainShown() -> CIImage? {
-        guard !edit.steps.isEmpty, edit.steps.allSatisfy({ $0.reach == HangarStep.whole }), let plainPreview, let shown else { return nil }
+        guard !edit.steps.isEmpty, !edit.steps.contains(where: \.changesShape), let plainPreview, let shown else { return nil }
         let shaped = renderer.shape(edit, plainPreview)
         let target = shown.image.extent.size
         let down = target.height / shaped.extent.height
@@ -621,7 +628,7 @@ public final class HangarEditor: UIViewController, HangarHost {
     public var shaped: (image: CIImage, context: HangarRenderContext)? { shapedImage.flatMap { p in shapedContext.map { (p, $0) } } }
     public var canvasFrame: CGRect { canvas.frame }
     public var plain: CIImage? {
-        guard edit.steps.allSatisfy({ $0.reach == HangarStep.whole }) else { return nil }
+        guard !edit.steps.contains(where: \.changesShape) else { return nil }
         return plainPreview.flatMap { p in preview.map { $0.extent.size == p.extent.size ? p : Self.resized(p, to: $0.extent.size) } }
     }
 
@@ -663,8 +670,13 @@ public final class HangarEditor: UIViewController, HangarHost {
     }
 
     public func showCanvas(_ shown: Bool) {
-        canvas.alpha = shown ? 1 : 0
+        canvasShown = shown
+        // Hidden until it's flown in.
+        if entered || !shown { canvas.alpha = shown ? 1 : 0 }
     }
+
+    /// Whether the canvas shows the picture, or a mode does (`showCanvas`).
+    private var canvasShown = true
 
     public func layoutNow() {
         view.layoutIfNeeded()
@@ -700,6 +712,8 @@ public final class HangarEditor: UIViewController, HangarHost {
         history.append(edit)
         historyIndex += 1
         sync()
+        // A step's other take, or its whole result: the picture under the edit made again.
+        refreshPreview()
     }
 
     private func step(_ by: Int) {
@@ -748,7 +762,10 @@ public final class HangarEditor: UIViewController, HangarHost {
         blocker.isHidden = false
         shimmer.run(over: shimmerRegion(job.region))
         UIAccessibility.post(notification: .announcement, argument: job.name)
-        let (original, renderer, edit, limit) = (original, renderer, edit, job.longestSide)
+        // More takes of the last step are made from the picture before it.
+        var under = edit
+        if job.addsTakes, !under.steps.isEmpty { under.steps.removeLast() }
+        let (original, renderer, limit, before) = (original, renderer, job.longestSide, under)
         jobNumber += 1
         let number = jobNumber
         self.job = Task { [weak self] in
@@ -756,7 +773,7 @@ public final class HangarEditor: UIViewController, HangarHost {
                 // The picture under the edit, as its steps make it, at most as large as the job takes.
                 let picture: CGImage = try await Task.detached(priority: .userInitiated) {
                     guard let source = original.cgImage ?? HangarEditor.drawn(original),
-                          let made = HangarEditor.makeBase(source, CGImagePropertyOrientation(original.imageOrientation), renderer, edit, limit ?? .greatestFiniteMagnitude),
+                          let made = HangarEditor.makeBase(source, CGImagePropertyOrientation(original.imageOrientation), renderer, before, limit ?? .greatestFiniteMagnitude),
                           let out = HangarRenderer.context.createCGImage(made.image, from: made.image.extent)
                     else { throw CocoaError(.fileReadCorruptFile) }
                     return out
@@ -766,11 +783,16 @@ public final class HangarEditor: UIViewController, HangarHost {
                 guard !made.takes.isEmpty else { throw CancellationError() }
                 let step = try await Task.detached(priority: .userInitiated) {
                     HangarStep(tool: job.tool, takes: try made.takes.map { try assets.keep($0) }, frame: made.frame,
-                               mask: try made.mask.map { try assets.keep($0) }, parameters: job.parameters)
+                               mask: try made.mask.map { try assets.keep($0) }, parameters: job.parameters, replaces: made.replaces)
                 }.value
                 try Task.checkCancellation()
                 guard let self else { return }
-                self.edit.add(step)
+                if job.addsTakes, let last = self.edit.steps.indices.last {
+                    self.edit.steps[last].take = self.edit.steps[last].takes.count
+                    self.edit.steps[last].takes += step.takes
+                } else {
+                    self.edit.add(step)
+                }
                 self.refreshPreview { [weak self] in
                     self?.endJob(number)
                     self?.commit()
@@ -845,6 +867,16 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     // MARK: More
 
+    /// An app's action in More: its price under its title; a choice of jobs a menu of its own.
+    private func menuItem(_ action: HangarAction) -> UIMenuElement {
+        guard let job = action.job else {
+            return UIMenu(title: action.title, image: UIImage(systemName: action.symbol), children: action.choices.map(menuItem))
+        }
+        let item = UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { [weak self] _ in self?.run(job) }
+        item.subtitle = action.price
+        return item
+    }
+
     private static let pasteboardType = "dev.hangar.edit"
 
     public func moreMenu() -> [UIMenuElement] {
@@ -861,9 +893,7 @@ public final class HangarEditor: UIViewController, HangarHost {
             self.replace(with: pasted)
         })
         if !actions.isEmpty, renderer.assets != nil {
-            items.append(UIMenu(options: .displayInline, children: actions.map { action in
-                UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { [weak self] _ in self?.run(action.job) }
-            }))
+            items.append(UIMenu(options: .displayInline, children: actions.map(menuItem)))
         }
         items.append(UIMenu(options: .displayInline, children: [
             UIAction(title: "Revert to Original", image: UIImage(systemName: "arrow.uturn.backward.circle"),

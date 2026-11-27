@@ -33,9 +33,15 @@ public struct HangarEdit: Hashable, Sendable, Codable {
     }
 
     /// A step added after the others. One that makes the picture larger (its frame past the picture's edges) keeps
-    /// the crop on the same part of it.
+    /// the crop on the same part of it; one that makes a part of it the whole picture lets the crop go (the part
+    /// is what's kept now), its shape with it.
     public mutating func add(_ step: HangarStep) {
         steps.append(step)
+        if step.replaces {
+            geometry.crop = nil
+            geometry.aspect = nil
+            return
+        }
         let reach = step.reach
         guard reach != HangarStep.whole, let crop = geometry.crop else { return }
         geometry.crop = CGRect(x: (crop.minX - reach.minX) / reach.width, y: (crop.minY - reach.minY) / reach.height,

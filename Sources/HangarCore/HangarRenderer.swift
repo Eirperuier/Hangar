@@ -21,9 +21,15 @@ public struct HangarRenderer: Sendable {
     public func base(_ edit: HangarEdit, _ source: CIImage) -> CIImage {
         var out = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
         guard let assets else { return out }
-        for step in edit.steps {
+        // A step that's the whole picture from then on: what's before it isn't drawn.
+        let from = edit.steps.lastIndex { $0.replaces && $0.asset.flatMap(assets.picture) != nil } ?? 0
+        for step in edit.steps[from...] {
             guard let id = step.asset, let made = assets.picture(id) else { continue }
-            let mask = step.mask.flatMap { assets.picture($0) }.map { CIImage(cgImage: $0) }
+            if step.replaces {
+                out = CIImage(cgImage: made)
+                continue
+            }
+            let mask = step.masked ? step.mask.flatMap { assets.picture($0) }.map { CIImage(cgImage: $0) } : nil
             out = Self.lay(CIImage(cgImage: made), mask: mask, in: step.frame, over: out)
         }
         return out

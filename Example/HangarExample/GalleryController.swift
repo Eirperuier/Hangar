@@ -155,16 +155,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let index = preview.index
         let photo = photos[index]
         let page = preview.page
-        var brushes: [HangarBrush] = [.localCleanUp]
-        #if DEBUG
-        if UserDefaults.standard.bool(forKey: "testSteps") { brushes.append(.testEdit) }
-        #endif
         let editor = HangarEditor(image: photo.original, edit: edit ?? photo.edit, modules: [
-            HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(), HangarToolsModule(brushes: brushes),
+            HangarAdjustModule(), HangarFiltersModule(), HangarCropModule(), HangarToolsModule(tools: HangarTool.local),
         ])
         editor.mode = mode
         // The app's own: in More, after Photos'.
-        editor.actions = [.removeBackground]
+        editor.actions = [.removeBackground, .upscale]
         #if DEBUG
         if UserDefaults.standard.bool(forKey: "testSteps") { editor.actions += [.testInvert, .testExpand] }
         #endif
