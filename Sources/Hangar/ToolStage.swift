@@ -119,6 +119,9 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
             lines = []
             drawLines()
             unzoom(animated: false)
+            // Its new shape at once: not in whatever moves it to its place next (the first picture, in a square
+            // till now, would be stretched into its own shape as it went).
+            UIView.performWithoutAnimation { layoutIfNeeded() }
         }
     }
 
