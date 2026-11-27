@@ -118,7 +118,11 @@ public final class HangarToolsModule: HangarModule {
         strip.fadeClear = 14
         strip.fadeWhole = 40
         strip.onRest = { [weak self] i in self?.choose(i) }
-        strip.onChoose = { [weak self] i in self.map { $0.h.showName($0.title(for: $0.tools[i])) } }
+        // A tool passing the middle: its name, where the chosen one's words or values aren't.
+        strip.onChoose = { [weak self] i in
+            guard let self, self.tools.indices.contains(i), !self.takesName(self.tool) else { return }
+            self.h.showName(self.title(for: self.tools[i]))
+        }
         strip.accessibilityLabel = "Tools"
         strip.spokenValue = { [weak self] i in self?.tools[i].name ?? "" }
 
@@ -165,6 +169,14 @@ public final class HangarToolsModule: HangarModule {
             self?.arrange(animated: true)
         }
 
+        // A finger anywhere but on the words puts the keyboard away (as it is, a menu over the bars gives it back as
+        // it closes).
+        let watch = TouchWatch()
+        watch.onTouch = { [weak self] touch in
+            guard let self, let view = touch.view, !view.isDescendant(of: self.bar), !view.isDescendant(of: self.references) else { return }
+            self.bar.endEditing(true)
+        }
+        host.view.addGestureRecognizer(watch)
         host.add(stage, at: .picture)
         for view in [pad, frameBox] as [UIView] {
             host.add(view, at: .picture)
@@ -218,7 +230,9 @@ public final class HangarToolsModule: HangarModule {
         let values = !tool.parameters.isEmpty
         let hasChips = values || isExtend
         let hasAction = tool.action != nil
-        let nameTaken = !sideways && (words || values)
+        let nameTaken = takesName(tool)
+        // What was showing, and where: moved there from where it was, if it's animated.
+        let was = [bar, chips, action, references].map { (view: $0 as UIView, shown: !$0.isHidden, frame: $0.frame) }
 
         // Shown or not.
         if isChosen {
@@ -236,23 +250,31 @@ public final class HangarToolsModule: HangarModule {
         pad.takesTwo = { if case .reframe = tool.kind { true } else { false } }()
 
         // Along the picture's foot, from the bottom: on an iPad the words, the values and the button; on a phone the
-        // button.
+        // button. The pictures to go by over the words, room kept for them.
         let gap: CGFloat = 10
         var foot = region.maxY
+        var along: [UIView] = []
         let across = layout.bounds.width - layout.safeArea.left - layout.safeArea.right - 32
         if words {
             if sideways {
                 let width = min(region.width - 32, 520)
                 bar.frame = CGRect(x: region.midX - width / 2, y: foot - 48 - 8, width: width, height: 48)
                 foot = bar.frame.minY - gap
+                along.append(bar)
             } else {
                 bar.frame = CGRect(x: layout.safeArea.left + 16, y: layout.modeBar.minY - 151.7 - 24, width: across, height: 48)
+            }
+            references.frame = CGRect(x: bar.frame.minX + 4, y: bar.frame.minY - ReferenceRow.side - 10, width: bar.frame.width, height: ReferenceRow.side)
+            if !references.isHidden {
+                foot = min(foot, references.frame.minY - gap)
+                if sideways { along.append(references) }
             }
         }
         if hasChips {
             if sideways {
                 chips.frame = CGRect(x: region.minX + 16, y: foot - Chips.height - (words ? 0 : 8), width: region.width - 32, height: Chips.height)
                 foot = chips.frame.minY - gap
+                along.append(chips)
             } else if isExtend {
                 // A phone's Extend has no ruler: its shapes where it would be.
                 chips.frame = CGRect(x: layout.safeArea.left + 16, y: layout.ruler.midY - Chips.height / 2, width: across, height: Chips.height)
@@ -266,34 +288,55 @@ public final class HangarToolsModule: HangarModule {
             let height = max(44, ceil(size.height))
             action.frame = CGRect(x: (region.midX - size.width / 2).rounded(), y: foot - height - 8, width: ceil(size.width), height: height)
             foot = action.frame.minY - gap
+            along.append(action)
         }
-        if words {
-            references.frame = CGRect(x: bar.frame.minX + 4, y: bar.frame.minY - ReferenceRow.side - 10, width: bar.frame.width, height: ReferenceRow.side)
+
+        // Where the picture goes: where it is for every tool, what's along its foot just under it, if there's room
+        // for it there; over it if not. (Extend's over it: the room round its frame is where it's pulled out to.)
+        var work = CGRect(x: region.minX, y: region.minY, width: region.width, height: max(80, foot - region.minY))
+        var place = work
+        if isChosen, isExtend, stage.hasPicture {
+            place = extendPlace(in: work)
+        } else if isChosen, stage.hasPicture, !along.isEmpty {
+            let shown = HangarEditor.fit(stage.pixelSize, in: region, scale: layout.scale)
+            let top = foot + gap, under: CGFloat = 16
+            if shown.maxY + under <= top {
+                for view in along { view.frame.origin.y -= top - (shown.maxY + under) }
+                place = region
+                work.size.height = shown.maxY + under - region.minY
+            }
         }
         placeBarOverKeyboard()
-
-        // Where the picture goes.
-        let work = CGRect(x: region.minX, y: region.minY, width: region.width, height: max(80, foot - region.minY))
-        var place = work
-        if isChosen, isExtend, stage.hasPicture { place = extendPlace(in: work) }
         let change = {
             self.stage.region = place
             self.stage.layoutIfNeeded()
         }
         if animated, isChosen { UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState], animations: change) } else { change() }
+        if animated, isChosen {
+            for (view, shown, frame) in was where shown && !view.isHidden && view.frame != frame {
+                let to = view.frame
+                view.frame = frame
+                UIView.animate(withDuration: 0.3, delay: 0, options: [.beginFromCurrentState]) { view.frame = to }
+            }
+        }
         pad.frame = work
         // The frame goes where the picture's going, with it.
-        let was = frameBox.onScreen
+        let wasFramed = frameBox.onScreen
         frameBox.kind = isExtend ? .around : .inside
         frameBox.limit = work.insetBy(dx: 8, dy: 8)
         frameBox.picture = isExtend ? place : stage.pictureFrame(in: h.view)
         frameBox.rect = isExtend ? extendFrame : closeBox
         frameBox.ratio = isExtend ? shapeRatio : nil
-        if animated, isChosen, isExtend, !frameBox.isHidden { frameBox.glide(from: was) }
+        if animated, isChosen, isExtend, !frameBox.isHidden { frameBox.glide(from: wasFramed) }
         placeDot()
         if !found.isEmpty { drawFound() }
         kept.frame = stage.marks.bounds
         updateControls()
+    }
+
+    /// Whether a tool's words or values are where its name goes (a phone's name row).
+    private func takesName(_ tool: HangarTool) -> Bool {
+        !(layout?.sideways ?? false) && (tool.words != nil || !tool.parameters.isEmpty)
     }
 
     /// Where the picture goes for Extend: its frame fitted to `work`, the picture inside it where the frame says.
@@ -507,7 +550,11 @@ public final class HangarToolsModule: HangarModule {
     // MARK: Tools
 
     private func choose(_ index: Int) {
-        guard tools.indices.contains(index), tools[index].id != tool.id else { return }
+        guard tools.indices.contains(index), tools[index].id != tool.id else {
+            // Back on the one chosen: its name again, if others' showed as they passed.
+            if isChosen { h.showName(takesName(tool) ? nil : title(for: tool)) }
+            return
+        }
         setTool(tools[index])
         arrange(animated: true)
         toolShown()

@@ -1,5 +1,6 @@
 import HangarCore
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// The words a tool asks for, on a capsule: a field, words to start from, pictures to go by, the strokes cleared,
 /// and sent (or not: a tool with a button of its own over the picture takes them with it).
@@ -450,5 +451,25 @@ final class TouchPad: UIView, UIGestureRecognizerDelegate {
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         g !== one && other !== one && g !== tap && other !== tap
+    }
+}
+
+/// Tells of each finger that comes down in its view, and lets it be: it recognizes nothing, and takes nothing from
+/// what's under the finger.
+@MainActor
+final class TouchWatch: UIGestureRecognizer {
+    var onTouch: ((UITouch) -> Void)?
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesEnded = false
+    }
+
+    convenience init() { self.init(target: nil, action: nil) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        for touch in touches { onTouch?(touch) }
+        state = .failed
     }
 }
