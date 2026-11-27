@@ -173,7 +173,7 @@ struct RetouchTests {
     }
 
     @Test func theDrawAreaMarkIsTheWebCanvasOwn() throws {
-        // `drawImageEditStroke`: the stroke's colour 45% through, as wide as its share of the shorter side; no outline.
+        // The web's draw-area mark: the stroke's colour 45% through, as wide as its share of the shorter side; no outline.
         let picture = plain(0.5, 0.5, 0.5, width: 200, height: 100)
         let line = HangarStroke(points: [CGPoint(x: 0.25, y: 0.5), CGPoint(x: 0.75, y: 0.5)], width: 0.2)
         let marked = try #require(HangarRetouch.marked(picture, [line], marking: .drawArea(), shownWidth: 400))
@@ -190,7 +190,7 @@ struct RetouchTests {
     }
 
     @Test func theEraserMarkIsTheWebCanvasOwn() throws {
-        // `drawStroke`: white 72% through 6 shown points wider, then blue 40% through; shown half the size, 12 pixels.
+        // The web's eraser mark: white 72% through 6 shown points wider, then blue 40% through; shown half the size, 12 pixels.
         let picture = plain(0.5, 0.5, 0.5, width: 200, height: 100)
         let line = HangarStroke(points: [CGPoint(x: 0.25, y: 0.5), CGPoint(x: 0.75, y: 0.5)], width: 0.2)
         let marked = try #require(HangarRetouch.marked(picture, [line], marking: .eraser, shownWidth: 100))
@@ -209,7 +209,7 @@ struct RetouchTests {
     }
 
     @Test func aStrokeIsKeptAsTheWebCanvasKeepsIt() throws {
-        // The web canvas's `ImageEditStroke`, as its agent's `imageAction` sends it.
+        // A stroke as the web canvas keeps it, and its agent sends it.
         let web = ##"{"points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}],"color":"#2440E6","widthRatio":0.05}"##
         let stroke = try JSONDecoder().decode(HangarStroke.self, from: Data(web.utf8))
         #expect(stroke.points == [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.3, y: 0.4)] && stroke.width == 0.05 && stroke.color == "#2440E6")

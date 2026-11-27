@@ -7,7 +7,7 @@ import Foundation
 /// much of the picture's shorter side. A single point is a dot. Its colour, if it has one of its own ("#2440E6"),
 /// for a mark of more than one colour.
 ///
-/// It's kept as Flowith's web canvas keeps a stroke (`ImageEditStroke`, and its agent's `imageAction` strokes):
+/// It's kept as Flowith's web canvas keeps a stroke, and as its agent sends one:
 /// `{"points": [{"x", "y"}], "widthRatio", "color"}`, its width the same share of the shorter side; one kept by an
 /// older Hangar (`{"points": [[x, y]], "width"}`) still opens.
 public struct HangarStroke: Hashable, Sendable, Codable {
@@ -172,9 +172,9 @@ public struct HangarToolRequest: @unchecked Sendable {
 /// How strokes are marked on the picture a model's given (`HangarToolRequest.marked`), as Flowith's web canvas marks
 /// them, for the model's words that name the marks.
 public enum HangarMarking: Hashable, Sendable {
-    /// The draw-area edit's (`imageEdit.ts`): each stroke in its own colour, or this one, 45% through.
+    /// The web's draw-area edit's: each stroke in its own colour, or this one, 45% through.
     case drawArea(color: String = HangarMarking.blue)
-    /// The eraser's (`image-eraser.ts`): each stroke white 72% through and 6 shown points wider, then blue 40% through.
+    /// The web's eraser's: each stroke white 72% through and 6 shown points wider, then blue 40% through.
     case eraser
 
     /// Flowith's blue.
@@ -316,13 +316,13 @@ public enum HangarRetouch {
             let points = stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
             switch marking {
             case .drawArea(let color):
-                // `drawImageEditStroke`: the stroke's colour, the whole stroke 45% through.
+                // The draw-area edit's: the stroke's colour, the whole stroke 45% through.
                 let width = max(1, stroke.width * shorter)
                 context.setAlpha(0.45)
                 mark(points, width: width, dot: width, color: HangarMarking.color(stroke.color ?? color), in: context)
                 context.setAlpha(1)
             case .eraser:
-                // `drawStroke`: white 6 shown points wider, then the blue (a dot's both its size: the blue over the white).
+                // The eraser's: white 6 shown points wider, then the blue (a dot's both its size: the blue over the white).
                 let width = stroke.width * shorter
                 let outline = 6 * size.width / max(shownWidth, 1)
                 mark(points, width: width + outline, dot: width, color: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.72), in: context)
