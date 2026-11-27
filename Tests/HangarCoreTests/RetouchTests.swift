@@ -152,6 +152,9 @@ struct RetouchTests {
         // The middle still red, nearly as it came (only the cast taken off it).
         let middle = colour(made.takes[0], 100, 100)
         #expect(middle[0] > 0.7 && middle[1] < 0.3 && middle[2] < 0.35, "\(middle)")
+        // As it came, for the step laid whole: the cast everywhere.
+        let far = colour(made.wholes[0], 100, 74)
+        #expect(abs(far[0] - 0.55) < 0.03 && abs(far[2] - 0.33) < 0.03, "\(far)")
         // Without matching, the cast stays.
         let unmatched = try HangarRetouch.made([back], for: request, matchingTones: false)
         #expect(colour(unmatched.takes[0], 100, 74)[2] < 0.4)
@@ -203,6 +206,11 @@ struct ToolStepTests {
         #expect(try at(20)[0] > 0.95 && at(80)[0] < 0.6)
         edit.steps[0].masked = false
         #expect(try at(20)[0] > 0.95 && at(80)[0] > 0.95)
+        // Laid whole, the take as it was made, where that's kept.
+        edit.steps[0].wholes = [try assets.keep(plain(0, 0, 1, width: 100, height: 100))]
+        #expect(try at(80)[2] > 0.95 && at(80)[0] < 0.05)
+        edit.steps[0].masked = true
+        #expect(try at(20)[0] > 0.95)
     }
 
     @Test func aPartMadeTheWholeIsThePictureFromThenOn() throws {

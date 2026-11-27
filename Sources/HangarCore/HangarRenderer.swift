@@ -22,9 +22,9 @@ public struct HangarRenderer: Sendable {
         var out = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
         guard let assets else { return out }
         // A step that's the whole picture from then on: what's before it isn't drawn.
-        let from = edit.steps.lastIndex { $0.replaces && $0.asset.flatMap(assets.picture) != nil } ?? 0
+        let from = edit.steps.lastIndex { $0.replaces && $0.laid.flatMap(assets.picture) != nil } ?? 0
         for step in edit.steps[from...] {
-            guard let id = step.asset, let made = assets.picture(id) else { continue }
+            guard let id = step.laid, let made = assets.picture(id) else { continue }
             if step.replaces {
                 out = CIImage(cgImage: made)
                 continue

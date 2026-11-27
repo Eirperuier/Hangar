@@ -40,16 +40,19 @@ public struct HangarMade: Sendable {
     public var takes: [CGImage]
     public var frame: CGRect
     public var mask: CGImage?
+    /// Each take as it was made, where the takes were changed to be laid by the mask (`HangarStep.wholes`).
+    public var wholes: [CGImage]
     public var replaces: Bool
 
     public init(_ picture: CGImage, frame: CGRect = HangarStep.whole, mask: CGImage? = nil, replaces: Bool = false) {
         self.init(takes: [picture], frame: frame, mask: mask, replaces: replaces)
     }
 
-    public init(takes: [CGImage], frame: CGRect = HangarStep.whole, mask: CGImage? = nil, replaces: Bool = false) {
+    public init(takes: [CGImage], frame: CGRect = HangarStep.whole, mask: CGImage? = nil, wholes: [CGImage] = [], replaces: Bool = false) {
         self.takes = takes
         self.frame = frame
         self.mask = mask
+        self.wholes = wholes
         self.replaces = replaces
     }
 }

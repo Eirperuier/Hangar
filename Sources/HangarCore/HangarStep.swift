@@ -27,12 +27,15 @@ public struct HangarStep: Hashable, Sendable, Codable {
     /// Whether it's laid only where its mask says (the part that was asked to change), or whole: a step can be
     /// switched to what was made, all of it.
     public var masked: Bool
+    /// Each take as it was made, by its id, where the take itself was changed to be laid by its mask (its tones
+    /// met to the picture's): what's laid whole. None if the takes are as they were made.
+    public var wholes: [String]
     /// Whether what it made is the picture from then on, whatever its size, rather than laid over the one before (a
     /// part of the picture made into the whole of it: Close-Up). Its frame and mask aren't read.
     public var replaces: Bool
 
     public init(tool: String, takes: [String], take: Int = 0, frame: CGRect = Self.whole, mask: String? = nil,
-                parameters: HangarValue? = nil, masked: Bool = true, replaces: Bool = false) {
+                parameters: HangarValue? = nil, masked: Bool = true, wholes: [String] = [], replaces: Bool = false) {
         self.tool = tool
         self.takes = takes
         self.take = take
@@ -40,12 +43,18 @@ public struct HangarStep: Hashable, Sendable, Codable {
         self.mask = mask
         self.parameters = parameters
         self.masked = masked
+        self.wholes = wholes
         self.replaces = replaces
     }
 
     /// The picture it uses.
     public var asset: String? {
         takes.indices.contains(take) ? takes[take] : takes.first
+    }
+
+    /// The picture it lays: the take as it was made if it's laid whole and that's kept.
+    public var laid: String? {
+        !masked && wholes.indices.contains(take) ? wholes[take] : asset
     }
 
     /// The picture before it, whole.
@@ -64,7 +73,7 @@ public struct HangarStep: Hashable, Sendable, Codable {
 
     // A step kept by an older version opens in a newer one: laid by its mask, over the picture before.
     private enum CodingKeys: String, CodingKey {
-        case tool, takes, take, frame, mask, parameters, masked, replaces
+        case tool, takes, take, frame, mask, parameters, masked, wholes, replaces
     }
 
     public init(from decoder: any Decoder) throws {
@@ -76,6 +85,7 @@ public struct HangarStep: Hashable, Sendable, Codable {
         mask = try container.decodeIfPresent(String.self, forKey: .mask)
         parameters = try container.decodeIfPresent(HangarValue.self, forKey: .parameters)
         masked = try container.decodeIfPresent(Bool.self, forKey: .masked) ?? true
+        wholes = try container.decodeIfPresent([String].self, forKey: .wholes) ?? []
         replaces = try container.decodeIfPresent(Bool.self, forKey: .replaces) ?? false
     }
 }

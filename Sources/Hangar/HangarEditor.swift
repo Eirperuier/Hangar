@@ -783,11 +783,16 @@ public final class HangarEditor: UIViewController, HangarHost {
                 guard !made.takes.isEmpty else { throw CancellationError() }
                 let step = try await Task.detached(priority: .userInitiated) {
                     HangarStep(tool: job.tool, takes: try made.takes.map { try assets.keep($0) }, frame: made.frame,
-                               mask: try made.mask.map { try assets.keep($0) }, parameters: job.parameters, replaces: made.replaces)
+                               mask: try made.mask.map { try assets.keep($0) }, parameters: job.parameters,
+                               wholes: try made.wholes.map { try assets.keep($0) }, replaces: made.replaces)
                 }.value
                 try Task.checkCancellation()
                 guard let self else { return }
                 if job.addsTakes, let last = self.edit.steps.indices.last {
+                    // Their takes as made beside theirs, while each has one.
+                    let wholes = self.edit.steps[last].wholes
+                    self.edit.steps[last].wholes = wholes.count == self.edit.steps[last].takes.count && step.wholes.count == step.takes.count
+                        ? wholes + step.wholes : []
                     self.edit.steps[last].take = self.edit.steps[last].takes.count
                     self.edit.steps[last].takes += step.takes
                 } else {

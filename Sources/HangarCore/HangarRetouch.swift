@@ -109,8 +109,8 @@ public struct HangarToolRequest: @unchecked Sendable {
         return HangarToolRequest(picture: picture, mask: mask, words: nil, texts: texts)
     }
 
-    /// More of the scene round `picture`, out to `frame`: the picture on a canvas that size, grey round it (as
-    /// Flowith gives its model one to draw on), `mask` white where it's grey.
+    /// More of the scene round `picture`, out to `frame`: the picture on a canvas that size, grey round it,
+    /// `mask` white where it's grey.
     public static func extend(_ picture: CGImage, to frame: CGRect, words: String? = nil) throws -> HangarToolRequest {
         let size = CGSize(width: picture.width, height: picture.height)
         guard frame.contains(HangarStep.whole.insetBy(dx: 1e-6, dy: 1e-6)), frame != HangarStep.whole,
@@ -297,27 +297,33 @@ public enum HangarRetouch {
     /// What was made from `request`'s picture, laid back over the part it asked to change (`request.mask`: what
     /// was painted, the text's boxes): each take the picture's size (an error if it came back another shape), its
     /// tones met to the picture's round that part (`matchingTones`), kept only there (`kept`).
-    public static func made(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage) {
+    /// `wholes`: each take as it came (the picture's size), for the step laid whole; none if its tones weren't met
+    /// (the takes are as they came).
+    public static func made(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage, wholes: [CGImage]) {
         guard !takes.isEmpty else { throw HangarRetouchError.empty }
         guard let asked = request.mask, let mask = kept(asked) else { throw HangarRetouchError.unpainted }
         let picture = request.picture
         let size = CGSize(width: picture.width, height: picture.height)
         let original = CIImage(cgImage: picture)
-        let out = try takes.map { take -> CGImage in
-            var image = try fitted(take, to: size)
-            if matchingTones { image = matchTones(image, to: original, inside: CIImage(cgImage: mask)) }
-            guard let made = HangarRenderer.context.createCGImage(image, from: CGRect(origin: .zero, size: size), format: .RGBA8,
-                                                                  colorSpace: picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
-            else { throw HangarRetouchError.empty }
-            return made
+        let space = picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        var out: [CGImage] = [], wholes: [CGImage] = []
+        for take in takes {
+            let image = try fitted(take, to: size)
+            let all = CGRect(origin: .zero, size: size)
+            guard matchingTones else {
+                out.append(try drawn(image, all, space))
+                continue
+            }
+            out.append(try drawn(matchTones(image, to: original, inside: CIImage(cgImage: mask)), all, space))
+            wholes.append(try drawn(image, all, space))
         }
-        return (out, mask)
+        return (out, mask, wholes)
     }
 
     /// What was made from `request`'s canvas (`HangarToolRequest.extend`), laid round the picture: each take the
     /// canvas's size (an error if it came back another shape), the picture's own pixels kept on it, what's drawn
     /// round it met to its tones (`matchingTones`). Its frame is the request's.
-    public static func extended(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage) {
+    public static func extended(_ takes: [CGImage], for request: HangarToolRequest, matchingTones: Bool = true) throws -> (takes: [CGImage], mask: CGImage, wholes: [CGImage]) {
         guard !takes.isEmpty else { throw HangarRetouchError.empty }
         let picture = request.picture
         let size = CGSize(width: picture.width, height: picture.height)
@@ -327,15 +333,19 @@ public enum HangarRetouch {
         let original = CIImage(cgImage: picture).transformed(by: CGAffineTransform(translationX: -frame.minX * size.width, y: (frame.maxY - 1) * size.height))
             .composited(over: CIImage(color: .clear).cropped(to: CGRect(origin: .zero, size: canvas)))
             .cropped(to: CGRect(origin: .zero, size: canvas))
-        let out = try takes.map { take -> CGImage in
-            var image = try fitted(take, to: canvas)
-            if matchingTones { image = matchTones(image, to: original, inside: CIImage(cgImage: mask)) }
-            guard let made = HangarRenderer.context.createCGImage(image, from: CGRect(origin: .zero, size: canvas), format: .RGBA8,
-                                                                  colorSpace: picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
-            else { throw HangarRetouchError.empty }
-            return made
+        let space = picture.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let all = CGRect(origin: .zero, size: canvas)
+        var out: [CGImage] = [], wholes: [CGImage] = []
+        for take in takes {
+            let image = try fitted(take, to: canvas)
+            guard matchingTones else {
+                out.append(try drawn(image, all, space))
+                continue
+            }
+            out.append(try drawn(matchTones(image, to: original, inside: CIImage(cgImage: mask)), all, space))
+            wholes.append(try drawn(image, all, space))
         }
-        return (out, mask)
+        return (out, mask, wholes)
     }
 
     /// How far into the picture what's drawn round it fades, of its shorter side.
@@ -354,6 +364,11 @@ public enum HangarRetouch {
                 : CGRect(x: 0, y: ((h - w / aspect) / 2).rounded(), width: w, height: (w / aspect).rounded())
             return take.cropping(to: cut) ?? take
         }
+    }
+
+    private static func drawn(_ image: CIImage, _ rect: CGRect, _ space: CGColorSpace) throws -> CGImage {
+        guard let out = HangarRenderer.context.createCGImage(image, from: rect, format: .RGBA8, colorSpace: space) else { throw HangarRetouchError.empty }
+        return out
     }
 
     /// `take` scaled to `size`, if it's that shape.

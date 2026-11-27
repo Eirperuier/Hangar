@@ -860,7 +860,7 @@ public final class HangarToolsModule: HangarModule {
                     return HangarMade(takes: try HangarRetouch.shaped(takes, like: CGSize(width: picture.width, height: picture.height)))
                 }
                 let made = try HangarRetouch.made(takes, for: request, matchingTones: tool.matchesTones)
-                return HangarMade(takes: made.takes, mask: made.mask)
+                return HangarMade(takes: made.takes, mask: made.mask, wholes: made.wholes)
             }
         case .text:
             let changes = found.compactMap { piece in piece.to.map { HangarTextChange(box: back(piece.box), from: piece.text, to: $0) } }
@@ -869,7 +869,7 @@ public final class HangarToolsModule: HangarModule {
             make = { picture in
                 let request = try HangarToolRequest.text(picture, changes: changes)
                 let made = try HangarRetouch.made(try await tool.make(request), for: request, matchingTones: tool.matchesTones)
-                return HangarMade(takes: made.takes, mask: made.mask)
+                return HangarMade(takes: made.takes, mask: made.mask, wholes: made.wholes)
             }
         case .extend:
             // The frame round the picture shown, round the picture (only turned or flipped: a rect still).
@@ -878,7 +878,7 @@ public final class HangarToolsModule: HangarModule {
             make = { picture in
                 let request = try HangarToolRequest.extend(picture, to: frame, words: words)
                 let made = try HangarRetouch.extended(try await tool.make(request), for: request, matchingTones: tool.matchesTones)
-                return HangarMade(takes: made.takes, frame: frame, mask: made.mask)
+                return HangarMade(takes: made.takes, frame: frame, mask: made.mask, wholes: made.wholes)
             }
         case .reframe, .light:
             let values = values
