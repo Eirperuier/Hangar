@@ -219,6 +219,9 @@ struct RetouchTests {
         // One an older Hangar kept.
         let old = try JSONDecoder().decode(HangarStroke.self, from: Data(#"{"points":[[0.5,0.5]],"width":0.1}"#.utf8))
         #expect(old.points == [CGPoint(x: 0.5, y: 0.5)] && old.width == 0.1 && old.color == nil)
+        // Written with a colour, as the web takes it.
+        let plainJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any]
+        #expect(plainJSON?["color"] as? String == "#2440E6")
     }
 
     @Test func aStrokesBoundsAreItsWidthRoundIt() {

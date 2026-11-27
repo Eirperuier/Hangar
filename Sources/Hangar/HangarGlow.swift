@@ -96,7 +96,6 @@ public final class HangarGlowView: UIView {
         layer.device = kit.device
         layer.pixelFormat = .rgba16Float
         layer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
-        layer.wantsExtendedDynamicRangeContent = true
         layer.isOpaque = false
         layer.framebufferOnly = true
         // Drawn with the picture's own move (a pinch), not a frame behind it.
@@ -330,6 +329,9 @@ public final class HangarGlowView: UIView {
             blit.generateMipmaps(for: heat)
             blit.endEncoding()
         }
+        // Past white only while something's bright (fresh paint, a flash, a job): the screen's left as it was otherwise.
+        let lit = !recent.isEmpty || area != nil
+        if metalLayer.wantsExtendedDynamicRangeContent != lit { metalLayer.wantsExtendedDynamicRangeContent = lit }
         guard let drawable = metalLayer.nextDrawable() else { return buffer.commit() }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture

@@ -45,7 +45,8 @@ public struct HangarStroke: Hashable, Sendable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(points.map { Point(x: $0.x, y: $0.y) }, forKey: .points)
         try container.encode(width, forKey: .widthRatio)
-        try container.encodeIfPresent(color, forKey: .color)
+        // The web takes no stroke without one: Flowith's blue for one that has none of its own.
+        try container.encode(color ?? HangarMarking.blue, forKey: .color)
     }
 
     /// The part of the picture it covers, 0 to 1 each way, its width round it.
