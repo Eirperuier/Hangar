@@ -23,8 +23,8 @@ public struct HangarStyle {
     public var autoOnSymbol: UIColor = .systemBackground
     /// The dot on a ruler where its default is, when the value's away from it.
     public var marker: UIColor = HangarStyle.dynamic(light: UIColor(white: 172 / 255, alpha: 1), dark: UIColor(white: 84 / 255, alpha: 1))
-    /// What a brush lays over the picture as it's painted (Tools).
-    public var paint: UIColor = UIColor.white.withAlphaComponent(0.55)
+    /// How a brush's paint and a tool working light the picture (Tools; and a job from More).
+    public var glow = HangarGlow()
     /// What's said over the picture in Tools (what to do, what it's doing), and the words asked for.
     public var hintFont: UIFont = .systemFont(ofSize: 13, weight: .medium)
     public var wordsFont: UIFont = .systemFont(ofSize: 17)

@@ -38,7 +38,8 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
 
     private let scroll = UIScrollView()
     private let picture = UIImageView()
-    private let paint = CAShapeLayer()
+    /// The paint, and the picture lit while it's worked on: over the picture, told where it is as it zooms.
+    let glow = HangarGlowView()
     private let cursor = CAShapeLayer()
     private let style: HangarStyle
     private var pixels = CGSize(width: 1, height: 1)
@@ -69,12 +70,10 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         picture.isUserInteractionEnabled = true
         picture.accessibilityIgnoresInvertColors = true
         scroll.addSubview(picture)
-        paint.fillColor = nil
-        paint.lineCap = .round
-        paint.lineJoin = .round
-        picture.layer.addSublayer(paint)
         marks.isUserInteractionEnabled = false
         picture.addSubview(marks)
+        glow.look = style.glow
+        addSubview(glow)
         cursor.fillColor = UIColor.white.withAlphaComponent(0.25).cgColor
         cursor.strokeColor = UIColor.white.withAlphaComponent(0.9).cgColor
         cursor.lineWidth = 1.5
@@ -101,7 +100,6 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         isAccessibilityElement = false
         picture.isAccessibilityElement = true
         picture.accessibilityTraits = [.image, .allowsDirectInteraction]
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (stage: ToolStage, _) in stage.drawLines() }
     }
 
     @available(*, unavailable)
@@ -116,6 +114,7 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         self.original = original.map { UIImage(cgImage: $0) }
         previewing = nil
         picture.image = shown
+        glow.show(image)
         if resized {
             lines = []
             drawLines()
@@ -127,6 +126,8 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
     /// The shown picture's pixels, and the picture's points a pixel as it's laid out unzoomed.
     var pixelSize: CGSize { pixels }
     var pointsPerPixel: CGFloat { picture.bounds.width / max(pixels.width, 1) }
+    /// The picture's width as it's shown unzoomed, in points.
+    var shownWidth: CGFloat { picture.bounds.width }
     /// The shown picture, as a tool would make it (nil: as it is).
     func preview(_ image: CGImage?) {
         previewing = image.map { UIImage(cgImage: $0) }
@@ -151,12 +152,23 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         guard scroll.zoomScale == 1 else { return }
         let fitted = HangarEditor.fit(pixels, in: region, scale: window?.screen.scale ?? 2)
         scroll.frame = region
+        glow.frame = bounds
         scroll.contentSize = fitted.size
         picture.frame = CGRect(origin: .zero, size: fitted.size)
         marks.frame = picture.bounds
         centre()
         scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: -scroll.contentInset.top)
-        drawLines()
+        placeGlow()
+    }
+
+    /// The glow over the picture where it is now.
+    private func placeGlow() {
+        glow.pictureFrame = picture.convert(picture.bounds, to: glow)
+        glow.clipFrame = scroll.frame
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        placeGlow()
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
@@ -165,6 +177,7 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         centre()
+        placeGlow()
     }
 
     /// The picture in the middle of the region while it's smaller than it.
@@ -200,11 +213,13 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         case .ended:
             drawing?.points.append(point)
             finishLine()
+            return
         default:
             drawing = nil
             hideCursor()
+            return drawLines()
         }
-        drawLines()
+        if let drawing { glow.paint(stroke(drawing)) }
     }
 
     @objc private func tapped(_ tap: UITapGestureRecognizer) {
@@ -212,27 +227,28 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
         onBegin?()
         drawing = Line(points: [pixel(tap.location(in: picture))], width: widthInPixels)
         finishLine()
-        drawLines()
     }
 
     private func finishLine() {
         hideCursor()
         guard let line = drawing else { return }
         drawing = nil
+        glow.paint(stroke(line))
+        glow.lift()
         lines.append(line)
         onStroke?(line)
+    }
+
+    /// A line as the glow (and a model) takes it: in the picture's units.
+    private func stroke(_ line: Line) -> HangarStroke {
+        HangarStroke(points: line.points.map { CGPoint(x: $0.x / pixels.width, y: $0.y / pixels.height) },
+                     width: line.width / min(pixels.width, pixels.height))
     }
 
     /// The strokes taken off, fading (Photos fades its brush stroke out once it's worked).
     func clear(fading: Bool) {
         lines = []
-        guard fading else { return drawLines() }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 1
-        fade.toValue = 0
-        fade.duration = 0.3
-        paint.add(fade, forKey: "fade")
-        drawLines()
+        glow.clear(fading: fading)
     }
 
     /// The last stroke taken off.
@@ -243,29 +259,7 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
     }
 
     private func drawLines() {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        paint.frame = picture.bounds
-        let toPoints = max(picture.bounds.width, 1) / pixels.width
-        let path = CGMutablePath()
-        // One path a width: Core Animation strokes a path at one width, so each stroke is its own outline.
-        for line in lines + (drawing.map { [$0] } ?? []) {
-            let points = line.points.map { CGPoint(x: $0.x * toPoints, y: $0.y * toPoints) }
-            let width = line.width * toPoints
-            guard let first = points.first else { continue }
-            if points.count == 1 {
-                path.addEllipse(in: CGRect(x: first.x - width / 2, y: first.y - width / 2, width: width, height: width))
-            } else {
-                let stroke = CGMutablePath()
-                stroke.addLines(between: points)
-                path.addPath(stroke.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 10))
-            }
-        }
-        paint.path = path
-        paint.fillColor = style.paint.resolvedColor(with: traitCollection).cgColor
-        paint.strokeColor = nil
-        paint.fillRule = .nonZero
-        CATransaction.commit()
+        glow.strokes = lines.map(stroke)
     }
 
     // MARK: The brush's size
@@ -298,7 +292,7 @@ final class ToolStage: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate
     /// The picture before the edit's steps, or the edit again.
     func showOriginal(_ on: Bool) {
         picture.image = on ? original ?? shown : previewing ?? shown
-        paint.isHidden = on
+        glow.isHidden = on
         marks.isHidden = on
     }
 

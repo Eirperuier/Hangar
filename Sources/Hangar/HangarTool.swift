@@ -43,8 +43,9 @@ public struct HangarTool: Sendable {
     public var action: String?
     /// What it costs, as the app says it ("90 credits"); nil for nothing shown.
     public var price: String?
-    /// The paint on the marked picture a model's given (`HangarToolRequest.marked`).
-    public var mark: CGColor
+    /// How the marked picture a model's given is marked (`HangarToolRequest.marked`), as the web canvas marks it for
+    /// the same model; and how wide its brush goes.
+    public var marking: HangarMarking
     /// The picture's longer side given to it, at most; its own if nil.
     public var longestSide: CGFloat?
     /// Whether what it makes has its tones met to the picture's round the part it changed (`HangarRetouch.matchTones`):
@@ -58,7 +59,7 @@ public struct HangarTool: Sendable {
     public var make: @Sendable (HangarToolRequest) async throws -> [CGImage]
 
     public init(id: String, name: String, symbol: String, kind: Kind, hint: String, working: String, done: String? = nil,
-                action: String? = nil, price: String? = nil, mark: CGColor = HangarRetouch.mark, longestSide: CGFloat? = nil,
+                action: String? = nil, price: String? = nil, marking: HangarMarking = .drawArea(), longestSide: CGFloat? = nil,
                 matchesTones: Bool = true, pickReference: (@MainActor (UIViewController) async -> HangarReference?)? = nil,
                 make: @escaping @Sendable (HangarToolRequest) async throws -> [CGImage]) {
         self.id = id
@@ -70,7 +71,7 @@ public struct HangarTool: Sendable {
         self.done = done
         self.action = action
         self.price = price
-        self.mark = mark
+        self.marking = marking
         self.longestSide = longestSide
         self.matchesTones = matchesTones
         self.pickReference = pickReference
@@ -84,7 +85,7 @@ public struct HangarTool: Sendable {
         HangarTool(id: "cleanUp", name: "Clean Up", symbol: "eraser", kind: .cleanUp,
                    hint: "Tap, brush, or circle what you want to remove. Pinch to pan and zoom.",
                    working: "Cleaning up your photo…", done: "Objects in your scene have been removed. Tap and hold to see the original.",
-                   price: price, longestSide: longestSide, matchesTones: matchesTones, make: make)
+                   price: price, marking: .eraser, longestSide: longestSide, matchesTones: matchesTones, make: make)
     }
 
     /// An edit in words: of the whole picture, or of a part painted first.

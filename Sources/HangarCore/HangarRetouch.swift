@@ -4,14 +4,48 @@ import Foundation
 
 /// A line a finger drew over a picture, kept as values so it can be drawn at any size: its points 0 to 1 each way
 /// from the picture's top left (the picture under the edit's geometry, as its steps make it), and how wide it is, as
-/// much of the picture's shorter side. A single point is a dot.
+/// much of the picture's shorter side. A single point is a dot. Its colour, if it has one of its own ("#2440E6"),
+/// for a mark of more than one colour.
+///
+/// It's kept as Flowith's web canvas keeps a stroke (`ImageEditStroke`, and its agent's `imageAction` strokes):
+/// `{"points": [{"x", "y"}], "widthRatio", "color"}`, its width the same share of the shorter side; one kept by an
+/// older Hangar (`{"points": [[x, y]], "width"}`) still opens.
 public struct HangarStroke: Hashable, Sendable, Codable {
     public var points: [CGPoint]
     public var width: CGFloat
+    public var color: String?
 
-    public init(points: [CGPoint], width: CGFloat) {
+    public init(points: [CGPoint], width: CGFloat, color: String? = nil) {
         self.points = points
         self.width = width
+        self.color = color
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case points, widthRatio, color, width
+    }
+
+    private struct Point: Codable {
+        var x: CGFloat
+        var y: CGFloat
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let points = try? container.decode([Point].self, forKey: .points) {
+            self.points = points.map { CGPoint(x: $0.x, y: $0.y) }
+        } else {
+            points = try container.decode([CGPoint].self, forKey: .points)
+        }
+        width = try container.decodeIfPresent(CGFloat.self, forKey: .widthRatio) ?? container.decode(CGFloat.self, forKey: .width)
+        color = try container.decodeIfPresent(String.self, forKey: .color)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(points.map { Point(x: $0.x, y: $0.y) }, forKey: .points)
+        try container.encode(width, forKey: .widthRatio)
+        try container.encodeIfPresent(color, forKey: .color)
     }
 
     /// The part of the picture it covers, 0 to 1 each way, its width round it.
@@ -91,14 +125,15 @@ public struct HangarToolRequest: @unchecked Sendable {
         self.values = values
     }
 
-    /// `strokes` over `picture` (none: all of it), the marked picture's paint `mark`'s colour (see through it as much
-    /// as its alpha says) outlined in white, as Flowith's draw-area edit marks a picture for its model.
+    /// `strokes` over `picture` (none: all of it), the marked picture marked as `marking` says, as Flowith's web canvas
+    /// marks a picture for its model. `shownWidth`: the picture's width as it was shown while it was painted, in
+    /// points (the eraser's outline is so many of them).
     public static func painted(_ picture: CGImage, strokes: [HangarStroke], words: String? = nil, references: [HangarReference] = [],
-                               mark: CGColor = HangarRetouch.mark) throws -> HangarToolRequest {
+                               marking: HangarMarking = .drawArea(), shownWidth: CGFloat) throws -> HangarToolRequest {
         guard !strokes.isEmpty else { return HangarToolRequest(picture: picture, words: words, references: references) }
         let size = CGSize(width: picture.width, height: picture.height)
         guard let mask = HangarRetouch.mask(strokes, size: size),
-              let marked = HangarRetouch.marked(picture, strokes, mark: mark) else { throw HangarRetouchError.unpainted }
+              let marked = HangarRetouch.marked(picture, strokes, marking: marking, shownWidth: shownWidth) else { throw HangarRetouchError.unpainted }
         return HangarToolRequest(picture: picture, mask: mask, marked: marked, strokes: strokes, words: words, references: references)
     }
 
@@ -134,6 +169,38 @@ public struct HangarToolRequest: @unchecked Sendable {
     }
 }
 
+/// How strokes are marked on the picture a model's given (`HangarToolRequest.marked`), as Flowith's web canvas marks
+/// them, for the model's words that name the marks.
+public enum HangarMarking: Hashable, Sendable {
+    /// The draw-area edit's (`imageEdit.ts`): each stroke in its own colour, or this one, 45% through.
+    case drawArea(color: String = HangarMarking.blue)
+    /// The eraser's (`image-eraser.ts`): each stroke white 72% through and 6 shown points wider, then blue 40% through.
+    case eraser
+
+    /// Flowith's blue.
+    public static let blue = "#2440E6"
+    /// The web canvas's draw-area colours to choose from.
+    public static let colors = ["#2440E6", "#0F80F0", "#27A06E", "#FFBF00", "#FF4794", "#F04438"]
+
+    /// How wide the brush goes on the screen, in points, and how wide it is at first: the web canvas's.
+    public var brushWidths: ClosedRange<CGFloat> {
+        switch self {
+        case .drawArea: 8...64
+        case .eraser: 8...48
+        }
+    }
+
+    public static let firstBrushWidth: CGFloat = 36
+
+    /// A colour written as the web writes it ("#2440E6"), opaque; Flowith's blue if it isn't one.
+    public static func color(_ hex: String) -> CGColor {
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return color(blue) }
+        return CGColor(srgbRed: CGFloat(value >> 16 & 0xFF) / 255, green: CGFloat(value >> 8 & 0xFF) / 255,
+                       blue: CGFloat(value & 0xFF) / 255, alpha: 1)
+    }
+}
+
 /// What can go wrong laying what a brush made back over the picture.
 public enum HangarRetouchError: LocalizedError, Sendable {
     /// Nothing was painted.
@@ -157,8 +224,6 @@ public enum HangarRetouchError: LocalizedError, Sendable {
 /// tones made to meet the picture's round that part, so a model that made the whole of it warmer or darker leaves
 /// no seam (Flowith's "change only the painted area": its 2% wider, 2% feather and tone matching). Any thread.
 public enum HangarRetouch {
-    /// Flowith's mark for a draw-area edit: its blue, 45% through.
-    public static let mark = CGColor(srgbRed: 0x24 / 255, green: 0x40 / 255, blue: 0xE6 / 255, alpha: 0.45)
     /// How much wider than the paint what's kept is, and how far its edge fades, of the picture's shorter side.
     public static let grow: CGFloat = 0.02
     public static let feather: CGFloat = 0.01
@@ -232,33 +297,56 @@ public enum HangarRetouch {
         return context.makeImage()
     }
 
-    /// The picture with the strokes painted on it in `mark`, each outlined in white (3 points of the picture's
-    /// thousand wider each side, as Flowith's eraser outlines its strokes).
-    public static func marked(_ picture: CGImage, _ strokes: [HangarStroke], mark: CGColor) -> CGImage? {
+    /// The picture with the strokes marked on it as Flowith's web canvas marks them (`marking`), stroke by stroke in
+    /// the order they were drawn: pixel for pixel but for the picture's size. `shownWidth`: the picture's width as it
+    /// was shown, in points.
+    public static func marked(_ picture: CGImage, _ strokes: [HangarStroke], marking: HangarMarking, shownWidth: CGFloat) -> CGImage? {
         let w = picture.width, h = picture.height
         guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
         let size = CGSize(width: w, height: h)
         context.draw(picture, in: CGRect(origin: .zero, size: size))
-        // Each stroke drawn whole then laid on (its overlaps not darker), as a canvas strokes a path.
-        context.setAlpha(0.72)
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
-        context.setStrokeColor(gray: 1, alpha: 1)
-        context.setFillColor(gray: 1, alpha: 1)
-        draw(strokes, in: context, size: size, extra: 6 * min(size.width, size.height) / 1000)
-        context.endTransparencyLayer()
-        context.setAlpha(mark.alpha)
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
-        let solid = mark.copy(alpha: 1) ?? mark
-        context.setStrokeColor(solid)
-        context.setFillColor(solid)
-        draw(strokes, in: context, size: size, extra: 0)
-        context.endTransparencyLayer()
+        context.translateBy(x: 0, y: size.height)
+        context.scaleBy(x: 1, y: -1)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        let shorter = min(size.width, size.height)
+        for stroke in strokes {
+            let points = stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+            switch marking {
+            case .drawArea(let color):
+                // `drawImageEditStroke`: the stroke's colour, the whole stroke 45% through.
+                let width = max(1, stroke.width * shorter)
+                context.setAlpha(0.45)
+                mark(points, width: width, dot: width, color: HangarMarking.color(stroke.color ?? color), in: context)
+                context.setAlpha(1)
+            case .eraser:
+                // `drawStroke`: white 6 shown points wider, then the blue (a dot's both its size: the blue over the white).
+                let width = stroke.width * shorter
+                let outline = 6 * size.width / max(shownWidth, 1)
+                mark(points, width: width + outline, dot: width, color: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.72), in: context)
+                mark(points, width: width, dot: width, color: CGColor(srgbRed: 36 / 255, green: 64 / 255, blue: 230 / 255, alpha: 0.4), in: context)
+            }
+        }
         return context.makeImage()
     }
 
-    /// The strokes as round lines (y down, so flipped into the context's), each `extra` pixels wider.
+    /// One stroke as a canvas strokes a path (its own overlaps not twice), a single point a dot `dot` across.
+    private static func mark(_ points: [CGPoint], width: CGFloat, dot: CGFloat, color: CGColor, in context: CGContext) {
+        guard let first = points.first else { return }
+        context.setFillColor(color)
+        context.setStrokeColor(color)
+        if points.count == 1 {
+            context.fillEllipse(in: CGRect(x: first.x - dot / 2, y: first.y - dot / 2, width: dot, height: dot))
+            return
+        }
+        context.setLineWidth(width)
+        context.beginPath()
+        context.addLines(between: points)
+        context.strokePath()
+    }
+
     private static func draw(_ strokes: [HangarStroke], in context: CGContext, size: CGSize, extra: CGFloat) {
         context.saveGState()
         context.translateBy(x: 0, y: size.height)

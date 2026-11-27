@@ -81,7 +81,7 @@ The editor keeps what they share (the top bar, the mode bar, the picture, the na
 
 ## Pictures made elsewhere
 
-Some changes are pixels, not values: an object erased, the background taken out, more of the scene drawn round it, the whole of it made larger, by a model on your server or by Vision on the device. Give the editor a `HangarJob` (from a mode, `host.run(job)`, or from More, as an `HangarAction`): it's given the picture as the edit has it so far, and what it makes becomes a step (`HangarStep`), one to undo, with the picture shimmering meanwhile and Cancel stopping it.
+Some changes are pixels, not values: an object erased, the background taken out, more of the scene drawn round it, the whole of it made larger, by a model on your server or by Vision on the device. Give the editor a `HangarJob` (from a mode, `host.run(job)`, or from More, as an `HangarAction`): it's given the picture as the edit has it so far, and what it makes becomes a step (`HangarStep`), one to undo, with the picture lit where it works meanwhile and Cancel stopping it.
 
 ```swift
 editor.actions = [HangarAction(title: "Upscale", symbol: "arrow.up.left.and.arrow.down.right", job: HangarJob(tool: "upscale", name: "Upscaling") { picture in
@@ -98,7 +98,8 @@ Photos' Tools (iOS 27) asks something of the picture and has it made again: pain
 ```swift
 let cleanUp = HangarTool.cleanUp(price: "2 credits", longestSide: 2048) { request in
     // request.picture: the picture as the edit's steps make it; request.mask: white where it was painted;
-    // request.marked: the picture with the paint on it, for a model that reads marks.
+    // request.marked: the picture with the paint on it, marked as Flowith's web eraser marks it (`HangarMarking.eraser`),
+    // for a model that reads marks.
     [try await server.erase(request.marked, prompt: "Remove the area marked by the translucent blue brush strokes…")]
 }
 let edit = HangarTool.edit(price: "4 credits", pickReference: pickFromLibrary) { request in
@@ -126,6 +127,16 @@ let editor = HangarEditor(image: image, modules: [HangarAdjustModule(), HangarFi
 A model may redraw the whole picture: where only a part was asked, Hangar keeps that part (2% wider, its edge feathered), meets its tones to the picture's round it (so a model's cast over everything leaves no seam), and refuses one that came back another shape; a whole picture that comes back another shape is cut to the picture's. What was asked is kept with the step, as values on the picture under the crop, so the crop, adjustments and filter can still change after.
 
 Once a step's made, its takes show over the picture: Again asks for another the same way (up to 8), the arrows choose the one used (each an undo step), and ⋯ lays it only where it was asked or whole, and shows what's kept. A tool's price, if the app gives one, shows after its name or on its button; an action's in More, under its title. An action can be a choice of jobs (`HangarAction(title:symbol:choices:)`, as Upscale's 2K, 4K and 8K).
+
+A stroke (`HangarStroke`) is kept as Flowith's web canvas keeps one (`{"points": [{"x", "y"}], "widthRatio", "color"}`), and a tool marks its picture as the web marks it for the same model (`HangarMarking.drawArea`, `.eraser`), so a stroke goes either way and a model's prompt reads the same marks. The brush and the light over a working picture are a view of their own (`HangarGlowView`), for a picture shown anywhere else:
+
+```swift
+let glow = HangarGlowView()                      // over the picture's view, as large as what it may light
+glow.show(picture)                               // the picture's CGImage: the frost and the lines it lights
+glow.pictureFrame = imageView.frame              // where it is, again as it moves or zooms
+glow.paint(stroke); glow.lift()                  // a stroke as a finger draws it (HangarStroke, the picture's units)
+glow.work(.painted)                              // lit while something works there (.whole, .boxes, .around)
+```
 
 The example's tools are all made on the device (a fill from round the paint, colours named in the words, the text written over the colour round it, the same camera and light the tools show, a part enlarged), so every tool can be tried; a model does far better.
 

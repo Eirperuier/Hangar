@@ -42,7 +42,8 @@ public final class HangarToolsModule: HangarModule {
     private var stagePicture: CGImage?
 
     // What each tool's been asked so far.
-    private var brushSize = 0.0
+    /// The brush's width on the screen, in points, held to the chosen tool's (the web canvas's).
+    private var brushWidth = HangarMarking.firstBrushWidth
     private var picked: [HangarReference] = []
     private var found: [Found] = []
     private var foundFor: CGImage?
@@ -60,6 +61,8 @@ public final class HangarToolsModule: HangarModule {
     /// that made it (to ask again), and whether what it keeps is shown.
     private var result: String?
     private var lastJob: HangarJob?
+    /// Where the last job was shown working (asked again, its strokes gone: their bounds).
+    private var lastArea = HangarArea.whole
     private var showingKept = false
 
     /// Text found on the picture: where (0 to 1 of the picture shown), what it says, what it's to say instead.
@@ -70,9 +73,6 @@ public final class HangarToolsModule: HangarModule {
         var view: UIView
     }
 
-    /// The brush's width on the screen at the ruler's ends, and at first (Flowith's 36).
-    static let widths: ClosedRange<CGFloat> = 8...80
-    static let firstWidth: CGFloat = 36
     /// Extend's shapes: the picture's own, any, then fixed ones.
     static let shapes: [(name: String, ratio: CGFloat?)] = [("Original", nil), ("Freeform", nil), ("Square", 1), ("4:3", 4 / 3), ("3:4", 3 / 4),
                                                              ("16:9", 16 / 9), ("9:16", 9 / 16)]
@@ -92,6 +92,7 @@ public final class HangarToolsModule: HangarModule {
 
     public func load(in host: any HangarHost) {
         self.host = host
+        GlowKit.prepare()
         let style = host.style
         stage = ToolStage(style: style)
         stage.isHidden = true
@@ -105,8 +106,7 @@ public final class HangarToolsModule: HangarModule {
             self?.ruled(value)
             self?.stage.hideCursor()
         }
-        brushSize = Double((Self.firstWidth - Self.widths.lowerBound) / (Self.widths.upperBound - Self.widths.lowerBound))
-        stage.brushWidth = Self.firstWidth
+        stage.brushWidth = brushWidth
 
         let buttons = tools.map { tool in
             ToolButton(HangarAdjustment(id: tool.id, name: tool.name, symbol: tool.symbol, range: 0...1) { image, _, _ in image }, style: style)
@@ -605,10 +605,14 @@ public final class HangarToolsModule: HangarModule {
             ruler.set(values[p.id] ?? p.start)
             ruler.accessibilityLabel = p.name
         } else {
+            // Along the ruler, the tool's widths end to end.
+            let widths = tool.marking.brushWidths, span = widths.upperBound - widths.lowerBound
+            brushWidth = min(max(brushWidth, widths.lowerBound), widths.upperBound)
+            stage.brushWidth = brushWidth
             ruler.range = 0...1
             ruler.magnet = nil
-            ruler.marked = Double((Self.firstWidth - Self.widths.lowerBound) / (Self.widths.upperBound - Self.widths.lowerBound))
-            ruler.set(brushSize)
+            ruler.marked = Double((HangarMarking.firstBrushWidth - widths.lowerBound) / span)
+            ruler.set(Double((brushWidth - widths.lowerBound) / span))
             ruler.accessibilityLabel = "Brush Size"
         }
     }
@@ -621,8 +625,9 @@ public final class HangarToolsModule: HangarModule {
             renderPreview()
             updateControls()
         } else {
-            brushSize = value
-            stage.brushWidth = Self.widths.lowerBound + CGFloat(value) * (Self.widths.upperBound - Self.widths.lowerBound)
+            let widths = tool.marking.brushWidths
+            brushWidth = widths.lowerBound + CGFloat(value) * (widths.upperBound - widths.lowerBound)
+            stage.brushWidth = brushWidth
             stage.showCursor()
         }
     }
@@ -904,6 +909,7 @@ public final class HangarToolsModule: HangarModule {
             return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
         }
         let words = tool.words != nil && !bar.words.isEmpty ? bar.words : nil
+        let shownWidth = stage.shownWidth
         var asked = ToolAsked(tool: tool.id, words: words)
         var region: CGRect?
         var shaped: HangarGeometry?
@@ -917,7 +923,8 @@ public final class HangarToolsModule: HangarModule {
             asked.references = references.map(\.id)
             region = strokes.isEmpty ? nil : strokes.reduce(CGRect.null) { $0.union($1.bounds(aspect: base.width / base.height)) }.intersection(HangarStep.whole)
             make = { picture in
-                let request = try HangarToolRequest.painted(picture, strokes: strokes, words: words, references: references, mark: tool.mark)
+                let request = try HangarToolRequest.painted(picture, strokes: strokes, words: words, references: references,
+                                                            marking: tool.marking, shownWidth: shownWidth)
                 let takes = try await tool.make(request)
                 guard request.mask != nil else {
                     return HangarMade(takes: try HangarRetouch.shaped(takes, like: CGSize(width: picture.width, height: picture.height)))
@@ -976,22 +983,41 @@ public final class HangarToolsModule: HangarModule {
                 return HangarMade(takes: try HangarRetouch.shaped(try await tool.make(request), like: size), replaces: true)
             }
         }
-        let job = HangarJob(tool: tool.id, name: tool.working, region: region.flatMap { $0.isNull ? nil : $0 }, longestSide: tool.longestSide,
+        var job = HangarJob(tool: tool.id, name: tool.working, region: region.flatMap { $0.isNull ? nil : $0 }, longestSide: tool.longestSide,
                             parameters: try? HangarValue(asked), shaped: shaped, make: make)
+        job.shownByMode = true
         lastJob = job
-        run(job)
+        // Shown working where it works, on the picture as it's shown.
+        let area: HangarArea = switch tool.kind {
+        case .cleanUp, .edit: stage.lines.isEmpty ? .whole : .painted
+        case .text: .boxes(found.compactMap { $0.to == nil ? nil : $0.box })
+        case .extend: .around(extendFrame)
+        case .reframe, .light: .whole
+        case .closeUp: .boxes([closeBox])
+        }
+        lastArea = area == .painted ? .boxes([paintedBounds]) : area
+        run(job, over: area)
+    }
+
+    /// Where it's painted, in the shown picture's units.
+    private var paintedBounds: CGRect {
+        let pixels = stage.pixelSize
+        return stage.lines.reduce(CGRect.null) { box, line in
+            line.points.reduce(box) { $0.union(CGRect(x: $1.x - line.width / 2, y: $1.y - line.width / 2, width: line.width, height: line.width)) }
+        }.applying(CGAffineTransform(scaleX: 1 / max(pixels.width, 1), y: 1 / max(pixels.height, 1))).intersection(HangarStep.whole)
     }
 
     /// The last step's tool asked again the same way: another take of it.
     private func again() {
         guard var job = lastJob, let step = h.edit.steps.last, step.takes.first == result, step.takes.count < Self.mostTakes else { return }
         job.addsTakes = true
-        run(job)
+        run(job, over: lastArea)
     }
 
-    private func run(_ job: HangarJob) {
+    private func run(_ job: HangarJob, over area: HangarArea) {
         let ran = tool.id
         working = true
+        stage.glow.work(area)
         stage.paints = false
         collapseResult(keepingResult: true)
         bar.endEditing(true)
@@ -1000,6 +1026,7 @@ public final class HangarToolsModule: HangarModule {
         h.run(job) { [weak self] done in
             guard let self else { return }
             self.working = false
+            self.stage.glow.work(nil)
             self.stage.paints = self.tool.paints
             guard self.tool.id == ran else { return self.arrange() }
             if done {

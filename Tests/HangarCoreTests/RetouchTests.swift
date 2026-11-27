@@ -109,7 +109,7 @@ struct RetouchTests {
 
     @Test func theMarkedPictureIsMarkedOnlyWherePainted() throws {
         let picture = plain(0.5, 0.5, 0.5, width: 100, height: 100)
-        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.5, y: 0.5)], width: 0.2)], words: "red")
+        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.5, y: 0.5)], width: 0.2)], words: "red", shownWidth: 100)
         let marked = try #require(request.marked)
         let under = colour(marked, 50, 50)
         #expect(under[2] > under[0] + 0.15, "blue over the grey")
@@ -117,7 +117,7 @@ struct RetouchTests {
         #expect(abs(off[0] - 0.5) < 0.02 && abs(off[2] - 0.5) < 0.02)
         #expect(request.words == "red")
         // Nothing painted: all of it, nothing marked.
-        let whole = try HangarToolRequest.painted(picture, strokes: [], words: "red")
+        let whole = try HangarToolRequest.painted(picture, strokes: [], words: "red", shownWidth: 100)
         #expect(whole.mask == nil && whole.marked == nil)
         #expect(throws: HangarRetouchError.self) { try HangarRetouch.made([picture], for: whole) }
     }
@@ -126,7 +126,7 @@ struct RetouchTests {
 
     @Test func aMadePictureOfAnotherShapeIsRefused() throws {
         let picture = plain(0.5, 0.5, 0.5, width: 100, height: 100)
-        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.5, y: 0.5)], width: 0.2)])
+        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.5, y: 0.5)], width: 0.2)], shownWidth: 100)
         #expect(throws: HangarRetouchError.self) { try HangarRetouch.made([plain(1, 0, 0, width: 120, height: 100)], for: request) }
         #expect(throws: HangarRetouchError.self) { try HangarRetouch.made([], for: request) }
         // Another size, the same shape: made the picture's.
@@ -140,7 +140,7 @@ struct RetouchTests {
         let size = 200
         let picture = plain(0.5, 0.5, 0.5, width: size, height: size)
         let strokes = [HangarStroke(points: [CGPoint(x: 0.5, y: 0.5)], width: 0.2)]
-        let request = try HangarToolRequest.painted(picture, strokes: strokes)
+        let request = try HangarToolRequest.painted(picture, strokes: strokes, shownWidth: 200)
         let cast = CIImage(cgImage: plain(0.55, 0.45, 0.33, width: size, height: size))
         let red = CIImage(color: CIColor(red: 0.9, green: 0.1, blue: 0.1)).cropped(to: CGRect(x: 90, y: 90, width: 20, height: 20))
         let back = HangarRenderer.context.createCGImage(red.composited(over: cast), from: cast.extent, format: .RGBA8,
@@ -166,10 +166,59 @@ struct RetouchTests {
         let subject = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: CGRect(x: 0, y: 0, width: 50, height: w))
         let picture = HangarRenderer.context.createCGImage(subject, from: CGRect(x: 0, y: 0, width: w, height: w), format: .RGBA8,
                                                            colorSpace: CGColorSpace(name: CGColorSpace.sRGB))!
-        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.4, y: 0.5)], width: 0.2)])
+        let request = try HangarToolRequest.painted(picture, strokes: [HangarStroke(points: [CGPoint(x: 0.4, y: 0.5)], width: 0.2)], shownWidth: 100)
         let made = try HangarRetouch.made([picture], for: request)
         #expect(colour(made.takes[0], 90, 50)[3] < 0.01)
         #expect(colour(made.takes[0], 20, 50)[3] > 0.99)
+    }
+
+    @Test func theDrawAreaMarkIsTheWebCanvasOwn() throws {
+        // `drawImageEditStroke`: the stroke's colour 45% through, as wide as its share of the shorter side; no outline.
+        let picture = plain(0.5, 0.5, 0.5, width: 200, height: 100)
+        let line = HangarStroke(points: [CGPoint(x: 0.25, y: 0.5), CGPoint(x: 0.75, y: 0.5)], width: 0.2)
+        let marked = try #require(HangarRetouch.marked(picture, [line], marking: .drawArea(), shownWidth: 400))
+        // Flowith's blue (0x24, 0x40, 0xE6) over the grey, 45% through.
+        let on = colour(marked, 100, 50)
+        #expect(abs(on[0] - (0.55 * 0.5 + 0.45 * 0x24 / 255)) < 0.02 && abs(on[2] - (0.55 * 0.5 + 0.45 * 0xE6 / 255)) < 0.02, "\(on)")
+        // 20 pixels wide (a fifth of the 100 high): its edge 10 from the middle, nothing round it.
+        #expect(colour(marked, 100, 58)[2] > 0.6)
+        #expect(abs(colour(marked, 100, 63)[2] - 0.5) < 0.02)
+        // A stroke's own colour.
+        let red = HangarStroke(points: line.points, width: 0.2, color: "#F04438")
+        let reds = try #require(HangarRetouch.marked(picture, [red], marking: .drawArea(), shownWidth: 400))
+        #expect(colour(reds, 100, 50)[0] > 0.65)
+    }
+
+    @Test func theEraserMarkIsTheWebCanvasOwn() throws {
+        // `drawStroke`: white 72% through 6 shown points wider, then blue 40% through; shown half the size, 12 pixels.
+        let picture = plain(0.5, 0.5, 0.5, width: 200, height: 100)
+        let line = HangarStroke(points: [CGPoint(x: 0.25, y: 0.5), CGPoint(x: 0.75, y: 0.5)], width: 0.2)
+        let marked = try #require(HangarRetouch.marked(picture, [line], marking: .eraser, shownWidth: 100))
+        let white = 0.28 * 0.5 + 0.72
+        let blue = colour(marked, 100, 50)
+        #expect(abs(blue[2] - (0.6 * white + 0.4 * 230 / 255)) < 0.02 && abs(blue[0] - (0.6 * white + 0.4 * 36 / 255)) < 0.02, "\(blue)")
+        // The white ring: past the blue's edge (10 out) to 16 out.
+        let ring = colour(marked, 100, 63)
+        #expect(abs(ring[0] - white) < 0.02 && abs(ring[2] - white) < 0.02, "\(ring)")
+        #expect(abs(colour(marked, 100, 68)[0] - 0.5) < 0.02)
+        // Stroke by stroke: a later stroke's white over an earlier one's blue.
+        let across = HangarStroke(points: [CGPoint(x: 0.5, y: 0.1), CGPoint(x: 0.5, y: 0.9)], width: 0.2)
+        let both = try #require(HangarRetouch.marked(picture, [line, across], marking: .eraser, shownWidth: 100))
+        let crossed = colour(both, 100, 50)
+        #expect(crossed[2] > blue[2] - 0.05 && crossed[0] > blue[0], "\(crossed)")
+    }
+
+    @Test func aStrokeIsKeptAsTheWebCanvasKeepsIt() throws {
+        // The web canvas's `ImageEditStroke`, as its agent's `imageAction` sends it.
+        let web = ##"{"points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}],"color":"#2440E6","widthRatio":0.05}"##
+        let stroke = try JSONDecoder().decode(HangarStroke.self, from: Data(web.utf8))
+        #expect(stroke.points == [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.3, y: 0.4)] && stroke.width == 0.05 && stroke.color == "#2440E6")
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(stroke)) as? [String: Any]
+        #expect((encoded?["points"] as? [[String: Double]])?.first == ["x": 0.1, "y": 0.2])
+        #expect(encoded?["widthRatio"] as? Double == 0.05 && encoded?["width"] == nil)
+        // One an older Hangar kept.
+        let old = try JSONDecoder().decode(HangarStroke.self, from: Data(#"{"points":[[0.5,0.5]],"width":0.1}"#.utf8))
+        #expect(old.points == [CGPoint(x: 0.5, y: 0.5)] && old.width == 0.1 && old.color == nil)
     }
 
     @Test func aStrokesBoundsAreItsWidthRoundIt() {

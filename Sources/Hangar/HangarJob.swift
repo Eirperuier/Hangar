@@ -18,6 +18,8 @@ public struct HangarJob: Sendable {
     /// Whether what it makes is more takes of the edit's last step (asked again, the same way) rather than a step of
     /// its own: it's given the picture before that step, and its takes go after that step's, the first of them used.
     public var addsTakes: Bool
+    /// Whether the mode that asks for it shows it working, over its own picture (Tools); the editor does otherwise.
+    public var shownByMode = false
     /// The edit's geometry, for a job given the picture as it shapes it (cropped, straightened, tilted; not turned
     /// or flipped): what it makes `replaces` the picture, and the geometry goes but for its turns and flip.
     public var shaped: HangarGeometry?
@@ -84,53 +86,5 @@ public struct HangarAction: Sendable {
         self.symbol = symbol
         job = nil
         self.choices = choices
-    }
-}
-
-/// Over the picture while a job works: light passing over the part it works on, again and again.
-@MainActor
-final class Shimmer: UIView {
-    private let band = CAGradientLayer()
-    private let clip = CALayer()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        clip.masksToBounds = true
-        layer.addSublayer(clip)
-        band.colors = [UIColor.white.withAlphaComponent(0).cgColor, UIColor.white.withAlphaComponent(0.45).cgColor,
-                       UIColor.white.withAlphaComponent(0).cgColor]
-        band.locations = [0, 0.5, 1]
-        band.startPoint = CGPoint(x: 0, y: 0.5)
-        band.endPoint = CGPoint(x: 1, y: 0.5)
-        clip.addSublayer(band)
-        alpha = 0
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    /// Shimmering over `region` (in its own coordinates), or still.
-    func run(over region: CGRect?) {
-        let area = region ?? bounds
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        clip.frame = area
-        let width = max(area.width, area.height) * 0.6
-        band.frame = CGRect(x: -width, y: -area.height * 0.5, width: width, height: area.height * 2)
-        band.setAffineTransform(CGAffineTransform(rotationAngle: .pi / 12))
-        CATransaction.commit()
-        let sweep = CABasicAnimation(keyPath: "position.x")
-        sweep.fromValue = -width / 2
-        sweep.toValue = area.width + width / 2
-        sweep.duration = 1.4
-        sweep.repeatCount = .infinity
-        sweep.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        band.add(sweep, forKey: "sweep")
-        UIView.animate(withDuration: 0.25) { self.alpha = 1 }
-    }
-
-    func stop() {
-        UIView.animate(withDuration: 0.25) { self.alpha = 0 } completion: { _ in self.band.removeAllAnimations() }
     }
 }

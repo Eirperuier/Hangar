@@ -111,7 +111,8 @@ public final class HangarEditor: UIViewController, HangarHost {
 
     private let backdrop = UIView()
     private let canvas = CanvasView()
-    private let shimmer = Shimmer()
+    /// The picture lit while a job works on it (one a mode shows itself, over its own picture, aside).
+    private let shimmer = HangarGlowView()
     private let closeButton: UIButton
     private let historyBar: UIVisualEffectView
     /// On an iPad, Photos' toggle between the original and the edit, first on the history capsule.
@@ -770,7 +771,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         guard self.job == nil, let assets = renderer.assets else { done?(false); return }
         for module in modules { module.stop() }
         blocker.isHidden = false
-        shimmer.run(over: shimmerRegion(job.region))
+        if !job.shownByMode { showWorking(job.region) }
         UIAccessibility.post(notification: .announcement, argument: job.name)
         // More takes of the last step are made from the picture before it.
         var under = edit
@@ -829,6 +830,18 @@ public final class HangarEditor: UIViewController, HangarHost {
         }
     }
 
+    /// The picture lit where the job works on it: as it's shown, its part of it.
+    private func showWorking(_ region: CGRect?) {
+        let frame = current?.pictureFrame ?? canvas.frame
+        shimmer.look = style.glow
+        shimmer.pictureFrame = frame
+        shimmer.show(shapedImage.flatMap { HangarRenderer.context.createCGImage($0, from: $0.extent) })
+        let part = shimmerRegion(region)
+        guard region != nil, part != frame, frame.width > 0, frame.height > 0 else { return shimmer.work(.whole) }
+        shimmer.work(.boxes([CGRect(x: (part.minX - frame.minX) / frame.width, y: (part.minY - frame.minY) / frame.height,
+                                    width: part.width / frame.width, height: part.height / frame.height)]))
+    }
+
     /// Where the picture shimmers: the job's part of it as the picture's shown (its corners where the edit's geometry
     /// takes them).
     private func shimmerRegion(_ region: CGRect?) -> CGRect {
@@ -849,7 +862,7 @@ public final class HangarEditor: UIViewController, HangarHost {
         guard number == nil || number == jobNumber else { return }
         job = nil
         blocker.isHidden = true
-        shimmer.stop()
+        shimmer.work(nil)
     }
 
     /// While a job works, a tap on Cancel stops it; nothing else is touched.
